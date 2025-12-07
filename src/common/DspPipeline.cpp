@@ -6,7 +6,7 @@
 #include <cstdint>
 
 #ifdef USE_SOUNDTOUCH
-#include <SoundTouch.h>
+#include <soundtouch/SoundTouch.h>
 #endif
 
 namespace krkrspeed {
