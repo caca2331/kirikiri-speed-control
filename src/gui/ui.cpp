@@ -45,14 +45,106 @@ struct AppState {
 
 AppState g_state;
 
-std::wstring getDllPath() {
+enum class ProcessArch {
+    Unknown,
+    X86,
+    X64,
+    Arm64
+};
+
+ProcessArch classifyMachine(USHORT machine) {
+    switch (machine) {
+    case IMAGE_FILE_MACHINE_I386:
+        return ProcessArch::X86;
+    case IMAGE_FILE_MACHINE_AMD64:
+        return ProcessArch::X64;
+    case IMAGE_FILE_MACHINE_ARM64:
+        return ProcessArch::Arm64;
+    default:
+        return ProcessArch::Unknown;
+    }
+}
+
+std::wstring describeArch(ProcessArch arch) {
+    switch (arch) {
+    case ProcessArch::X86:
+        return L"x86";
+    case ProcessArch::X64:
+        return L"x64";
+    case ProcessArch::Arm64:
+        return L"ARM64";
+    default:
+        return L"unknown";
+    }
+}
+
+constexpr ProcessArch getSelfArch() {
+#if defined(_M_X64)
+    return ProcessArch::X64;
+#elif defined(_M_IX86)
+    return ProcessArch::X86;
+#elif defined(_M_ARM64)
+    return ProcessArch::Arm64;
+#else
+    return ProcessArch::Unknown;
+#endif
+}
+
+bool queryProcessArch(DWORD pid, ProcessArch &archOut, std::wstring &error) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) {
+        error = L"OpenProcess failed while probing architecture (error " + std::to_wstring(GetLastError()) + L")";
+        return false;
+    }
+
+    HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    using IsWow64Process2Fn = BOOL(WINAPI *)(HANDLE, USHORT *, USHORT *);
+    auto isWow64Process2 = reinterpret_cast<IsWow64Process2Fn>(GetProcAddress(kernel, "IsWow64Process2"));
+    if (isWow64Process2) {
+        USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        USHORT nativeMachine = IMAGE_FILE_MACHINE_UNKNOWN;
+        if (isWow64Process2(process, &processMachine, &nativeMachine)) {
+            archOut = classifyMachine(processMachine == IMAGE_FILE_MACHINE_UNKNOWN ? nativeMachine : processMachine);
+            CloseHandle(process);
+            return true;
+        }
+    }
+
+    BOOL wow64 = FALSE;
+    if (IsWow64Process(process, &wow64)) {
+        SYSTEM_INFO info{};
+        GetNativeSystemInfo(&info);
+        if (wow64) {
+            archOut = ProcessArch::X86;
+        } else {
+            switch (info.wProcessorArchitecture) {
+            case PROCESSOR_ARCHITECTURE_AMD64:
+                archOut = ProcessArch::X64;
+                break;
+            case PROCESSOR_ARCHITECTURE_ARM64:
+                archOut = ProcessArch::Arm64;
+                break;
+            default:
+                archOut = ProcessArch::Unknown;
+                break;
+            }
+        }
+        CloseHandle(process);
+        return true;
+    }
+
+    error = L"Unable to query process architecture (error " + std::to_wstring(GetLastError()) + L")";
+    CloseHandle(process);
+    return false;
+}
+
+std::filesystem::path getExecutableDir() {
     wchar_t buffer[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) == 0) {
-        return L"";
+        return {};
     }
     std::filesystem::path path(buffer);
-    path = path.parent_path() / L"krkr_speed_hook.dll";
-    return path.wstring();
+    return path.parent_path();
 }
 
 bool hasVisibleWindow(DWORD pid) {
@@ -250,6 +342,45 @@ void refreshProcessList(HWND combo, HWND statusLabel) {
     setStatus(statusLabel, status);
 }
 
+bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &error) {
+    const auto baseDir = getExecutableDir();
+    if (baseDir.empty()) {
+        error = L"Unable to locate controller directory.";
+        return false;
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    if (arch == ProcessArch::X86) {
+        candidates = {
+            baseDir / L"x86" / L"krkr_speed_hook.dll",
+            baseDir / L"krkr_speed_hook32.dll",
+            baseDir / L"krkr_speed_hook_x86.dll",
+            baseDir / L"krkr_speed_hook.dll" // fallback
+        };
+    } else {
+        candidates = {
+            baseDir / L"x64" / L"krkr_speed_hook.dll",
+            baseDir / L"krkr_speed_hook64.dll",
+            baseDir / L"krkr_speed_hook_x64.dll",
+            baseDir / L"krkr_speed_hook.dll" // fallback
+        };
+    }
+
+    for (const auto &candidate : candidates) {
+        if (!candidate.empty() && std::filesystem::exists(candidate)) {
+            outPath = candidate.wstring();
+            return true;
+        }
+    }
+
+    if (arch == ProcessArch::X86) {
+        error = L"Matching hook DLL not found. Place x86/krkr_speed_hook.dll (or krkr_speed_hook32.dll) next to the controller.";
+    } else {
+        error = L"Matching hook DLL not found. Place x64/krkr_speed_hook.dll (or krkr_speed_hook64.dll) next to the controller.";
+    }
+    return false;
+}
+
 void handleApply(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, kProcessComboId);
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
@@ -274,13 +405,27 @@ void handleApply(HWND hwnd) {
     }
 
     const auto &proc = g_state.processes[static_cast<std::size_t>(index)];
-    const std::wstring dllPath = getDllPath();
-    if (dllPath.empty()) {
-        setStatus(statusLabel, L"Unable to locate krkr_speed_hook.dll next to the controller.");
+
+    ProcessArch targetArch = ProcessArch::Unknown;
+    std::wstring archError;
+    if (!queryProcessArch(proc.pid, targetArch, archError)) {
+        setStatus(statusLabel, archError);
         return;
     }
-    if (!std::filesystem::exists(dllPath)) {
-        setStatus(statusLabel, L"krkr_speed_hook.dll was not found beside the controller executable.");
+
+    constexpr ProcessArch selfArch = getSelfArch();
+    if (targetArch != ProcessArch::Unknown && selfArch != ProcessArch::Unknown && targetArch != selfArch) {
+        std::wstring msg = L"Architecture mismatch: controller=" + describeArch(selfArch) +
+                           L", target=" + describeArch(targetArch) +
+                           L". Build/run the " + describeArch(targetArch) +
+                           L" version of krkr_speed_hook.dll + KrkrSpeedController.";
+        setStatus(statusLabel, msg);
+        return;
+    }
+
+    std::wstring dllPath;
+    if (!selectHookForArch(targetArch, dllPath, archError)) {
+        setStatus(statusLabel, archError);
         return;
     }
 

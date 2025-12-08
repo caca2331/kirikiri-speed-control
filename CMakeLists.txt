@@ -101,4 +101,11 @@ if(BUILD_TESTS)
     add_test(NAME dsp_smoke COMMAND dsp_smoke)
 endif()
 
+if(WIN32)
+    add_custom_target(dist_dual_arch
+        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/dual_arch.cmake
+        COMMENT "Configure+build x86/x64 and stage dist/{x86,x64}"
+    )
+endif()
+
 message(STATUS "SoundTouch support: ${USE_SOUNDTOUCH}")

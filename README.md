@@ -32,6 +32,24 @@ Use CMake to generate a Visual Studio solution. SoundTouch integration is disabl
 cmake -B build -S . -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON
 cmake --build build --config Release
 ```
+Most Kirikiri games are 32-bit. If the GUI reports an architecture mismatch or you see “DLL injection returned 0”, rebuild a Win32 (x86) payload and matching SoundTouch triplet:
+```powershell
+cmake -B build32 -S . -A Win32 -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON -DVCPKG_TARGET_TRIPLET=x86-windows
+cmake --build build32 --config Release
+```
+For dual-arch packaging, keep the binaries separated so each hook loads the right SoundTouch runtime:
+```
+dist/
+  x64/ (x64 KrkrSpeedController.exe, krkr_speed_hook.dll, SoundTouch.dll)
+  x86/ (x86 KrkrSpeedController.exe, krkr_speed_hook.dll, SoundTouch.dll)
+```
+The GUI will pick `x86/krkr_speed_hook.dll` for 32-bit targets and `x64/krkr_speed_hook.dll` for 64-bit targets automatically; run the controller that matches the target bitness.
+To build and stage both architectures automatically (produces `dist/x64` and `dist/x86`):
+```powershell
+cmake -B build -S . -A x64 -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON
+cmake --build build --config Release --target dist_dual_arch
+```
+This configures/compiles `build.x64` and `build.x86`, then copies `KrkrSpeedController.exe`, `krkr_speed_hook.dll`, and `SoundTouch.dll` into the dist folders for each arch.
 
 ### Non-Windows smoke tests only
 ```bash
@@ -47,8 +65,9 @@ ctest --test-dir build -V
 - `KrkrSpeedController.exe` opens a Win32 UI: refresh the running process list (filters to your session + visible windows),
   select a target, enter a speed between 0.5 and 10× (recommended 0.75–2×), and press “Hook + Apply” to attempt
   `krkr_speed_hook.dll` injection from the same folder. A checkbox + seconds box (default 30s) gates processing so only
-  buffers shorter than the threshold are stretched; uncheck to process all audio. Closing the window cleanly exits the
-  controller.
+  buffers shorter than the threshold are stretched; uncheck to process all audio. The GUI now detects bitness mismatches
+  before injection—run the Win32 build for 32-bit games and the x64 build for 64-bit games. Closing the window cleanly
+  exits the controller.
 - `dsp_smoke.exe` prints progress to stdout and logs so the run is traceable even when launched by double-clicking.
 
 ## Next Steps
@@ -90,6 +109,24 @@ ctest --test-dir build -V
 cmake -B build -S . -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON
 cmake --build build --config Release
 ```
+大多数Kirikiri游戏是32位的。如果界面提示架构不匹配或出现“DLL injection returned 0”，请改用Win32（x86）构建并选择对应的SoundTouch三元组：
+```powershell
+cmake -B build32 -S . -A Win32 -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON -DVCPKG_TARGET_TRIPLET=x86-windows
+cmake --build build32 --config Release
+```
+若需要同时支持双架构，请将两套二进制分目录存放，以保证各自加载正确的SoundTouch运行库：
+```
+dist/
+  x64/（x64版 KrkrSpeedController.exe、krkr_speed_hook.dll、SoundTouch.dll）
+  x86/（x86版 KrkrSpeedController.exe、krkr_speed_hook.dll、SoundTouch.dll）
+```
+界面会根据目标进程自动选择`x86/krkr_speed_hook.dll`或`x64/krkr_speed_hook.dll`；请运行与目标进程位数一致的控制器。
+如需自动构建并整理双架构（输出到`dist/x64`与`dist/x86`）：
+```powershell
+cmake -B build -S . -A x64 -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON
+cmake --build build --config Release --target dist_dual_arch
+```
+该目标会配置/编译`build.x64`与`build.x86`，并将`KrkrSpeedController.exe`、`krkr_speed_hook.dll`、`SoundTouch.dll`复制到对应的dist目录。
 
 ### 非Windows（仅冒烟测试）
 ```bash
@@ -104,7 +141,8 @@ ctest --test-dir build -V
   测试，便于排查问题；如需静默运行可在配置阶段关闭日志。
 - `KrkrSpeedController.exe` 现为Win32界面：刷新进程列表（仅显示当前会话且有可见窗口的进程）、选择目标、输入0.5–10倍
   速（推荐0.75–2倍），点击“Hook + Apply”尝试从同目录注入`krkr_speed_hook.dll`；旁边的复选框+秒数输入（默认30秒）
-  用于按长度区分，勾选时只对短于阈值的缓冲做变速，取消勾选则全部变速。关闭窗口即退出控制器。
+  用于按长度区分，勾选时只对短于阈值的缓冲做变速，取消勾选则全部变速。界面会提前检测架构是否匹配——32位游戏请使用Win32构建，
+  64位游戏使用x64构建。关闭窗口即退出控制器。
 - `dsp_smoke.exe` 会同时输出到控制台和日志，即使双击运行控制台快速关闭，也能在日志中查看结果。
 
 ## 下一步计划
