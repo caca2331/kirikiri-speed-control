@@ -1,0 +1,2 @@
+2025-12-07 17:51: Added SoundTouch runtime staging to build outputs, fixed the DSP pipeline to convert 16-bit PCM into SoundTouch's sample type (preventing heap crashes), and made KrkrSpeedController prompt for a speed so the console stays open. dsp_smoke now runs successfully with SoundTouch.dll present.
+2025-12-07 19:18: Added toggleable temp-file logging (ENABLE_LOGGING), rebuilt KrkrSpeedController as a Win32 process picker with Hook + Apply injection and clamped speed input, and logged dsp_smoke scenarios; Release build succeeded and dsp_smoke still runs cleanly.

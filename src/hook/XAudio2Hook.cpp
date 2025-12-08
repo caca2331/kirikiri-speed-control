@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <map>
+#include "../common/Logging.h"
 
 namespace krkrspeed {
 
@@ -14,6 +15,7 @@ XAudio2Hook &XAudio2Hook::instance() {
 void XAudio2Hook::initialize() {
     detectVersion();
     hookEntryPoints();
+    KRKR_LOG_INFO("XAudio2 hook initialized for version " + m_version);
 }
 
 void XAudio2Hook::detectVersion() {
@@ -24,16 +26,19 @@ void XAudio2Hook::detectVersion() {
     else if (xa28) m_version = "2.8";
     else if (xa27) m_version = "2.7";
     else m_version = "unknown";
+    KRKR_LOG_DEBUG("Detected XAudio2 version: " + m_version);
 }
 
 void XAudio2Hook::hookEntryPoints() {
     // Placeholder for MinHook wiring. The scaffolding allows future work to attach to
     // XAudio2Create/CoCreateInstance dynamically while keeping thread-safe state.
+    KRKR_LOG_INFO("XAudio2 hookEntryPoints stub invoked (MinHook wiring pending)");
 }
 
 void XAudio2Hook::setUserSpeed(float speed) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_userSpeed = std::clamp(speed, 0.75f, 2.0f);
+    KRKR_LOG_INFO("User speed set to " + std::to_string(m_userSpeed) + "x");
     for (auto &kv : m_contexts) {
         kv.second.userSpeed = m_userSpeed;
         kv.second.effectiveSpeed = kv.second.userSpeed * kv.second.engineRatio;
@@ -47,6 +52,8 @@ void XAudio2Hook::onCreateSourceVoice(std::uintptr_t voiceKey, std::uint32_t sam
     m_contexts.emplace(voiceKey, std::move(ctx));
     (void)sampleRate;
     (void)channels;
+    KRKR_LOG_DEBUG("Created voice context key=" + std::to_string(voiceKey) + " sr=" + std::to_string(sampleRate) +
+                   " ch=" + std::to_string(channels));
 }
 
 std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, const std::uint8_t *data, std::size_t size) {
@@ -68,6 +75,7 @@ std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, c
     if (pipeline == pipelines.end()) {
         auto dsp = std::make_unique<DspPipeline>(44100, 1, defaultConfig);
         pipeline = pipelines.emplace(voiceKey, std::move(dsp)).first;
+        KRKR_LOG_DEBUG("Initialized DSP pipeline for voice key=" + std::to_string(voiceKey));
     }
     return pipeline->second->process(data, size, ratio);
 }

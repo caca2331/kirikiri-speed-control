@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdint>
+#include <type_traits>
 
 #ifdef USE_SOUNDTOUCH
 #include <soundtouch/SoundTouch.h>
@@ -14,9 +15,9 @@ namespace krkrspeed {
 struct DspPipeline::Impl {
 #ifdef USE_SOUNDTOUCH
     soundtouch::SoundTouch touch;
+    std::vector<soundtouch::SAMPLETYPE> scratch;
 #endif
     std::mutex mutex;
-    std::vector<std::uint8_t> scratch;
 };
 
 DspPipeline::DspPipeline(std::uint32_t sampleRate, std::uint32_t channels, const DspConfig &config)
@@ -34,20 +35,56 @@ DspPipeline::~DspPipeline() = default;
 
 std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::size_t bytes, float speedRatio) {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
+    if (bytes == 0 || m_channels == 0) {
+        return {};
+    }
+
+    const float tempo = std::max(0.01f, speedRatio);
     const std::size_t sampleCount = bytes / sizeof(std::int16_t);
+    const std::size_t frameCount = sampleCount / m_channels;
+    if (frameCount == 0) {
+        return {};
+    }
 
 #ifdef USE_SOUNDTOUCH
-    m_impl->touch.setTempo(speedRatio);
-    m_impl->touch.putSamples(reinterpret_cast<const soundtouch::SAMPLETYPE *>(data), sampleCount / m_channels);
+    using SampleType = soundtouch::SAMPLETYPE;
+    constexpr bool kIsFloat = std::is_same_v<SampleType, float>;
+    constexpr bool kIsInt16 = std::is_same_v<SampleType, std::int16_t>;
+    static_assert(kIsFloat || kIsInt16, "Unexpected SoundTouch sample type");
+    const auto *pcm = reinterpret_cast<const std::int16_t *>(data);
+
+    std::vector<SampleType> input(sampleCount);
+    if constexpr (kIsFloat) {
+        constexpr float invShortMax = 1.0f / 32768.0f;
+        for (std::size_t i = 0; i < sampleCount; ++i) {
+            input[i] = static_cast<float>(pcm[i]) * invShortMax;
+        }
+    } else {
+        std::memcpy(input.data(), pcm, sampleCount * sizeof(std::int16_t));
+    }
+
+    m_impl->touch.setTempo(tempo);
+    m_impl->touch.putSamples(input.data(), frameCount);
 
     std::vector<std::uint8_t> output;
-    output.reserve(bytes);
 
-    const std::size_t maxSamples = static_cast<std::size_t>(std::ceil(sampleCount / std::max(0.1f, speedRatio)) + 1024);
-    m_impl->scratch.resize(maxSamples * sizeof(std::int16_t));
+    const std::size_t maxFrames = static_cast<std::size_t>(std::ceil(frameCount / std::max(0.1f, tempo)) + 1024);
+    m_impl->scratch.resize(maxFrames * m_channels);
 
-    const auto received = m_impl->touch.receiveSamples(reinterpret_cast<soundtouch::SAMPLETYPE *>(m_impl->scratch.data()), maxSamples / m_channels);
-    output.insert(output.end(), m_impl->scratch.begin(), m_impl->scratch.begin() + received * m_channels * sizeof(std::int16_t));
+    const auto receivedFrames = m_impl->touch.receiveSamples(m_impl->scratch.data(), maxFrames);
+    const std::size_t receivedSamples = receivedFrames * m_channels;
+
+    if constexpr (kIsFloat) {
+        output.resize(receivedSamples * sizeof(std::int16_t));
+        auto *outPcm = reinterpret_cast<std::int16_t *>(output.data());
+        for (std::size_t i = 0; i < receivedSamples; ++i) {
+            const float clamped = std::clamp(m_impl->scratch[i], -1.0f, 1.0f);
+            outPcm[i] = static_cast<std::int16_t>(std::lround(clamped * 32767.0f));
+        }
+    } else {
+        output.resize(receivedSamples * sizeof(std::int16_t));
+        std::memcpy(output.data(), m_impl->scratch.data(), output.size());
+    }
     return output;
 #else
     // Fallback path: perform naive resampling to approximate tempo without pitch preservation.

@@ -8,13 +8,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(BUILD_GUI "Build the optional controller GUI" ON)
 option(USE_SOUNDTOUCH "Enable SoundTouch based DSP (requires library)" OFF)
 option(BUILD_TESTS "Build DSP smoke tests (desktop only)" ON)
+option(ENABLE_LOGGING "Enable krkr_speed logging" ON)
 
 add_library(krkr_common STATIC
     src/common/DspPipeline.cpp
+    src/common/Logging.cpp
 )
 target_include_directories(krkr_common PUBLIC src)
 target_compile_definitions(krkr_common PUBLIC
     $<$<BOOL:${USE_SOUNDTOUCH}>:USE_SOUNDTOUCH>
+    $<$<BOOL:${ENABLE_LOGGING}>:KRKR_ENABLE_LOGGING=1>
+    $<$<NOT:$<BOOL:${ENABLE_LOGGING}>>:KRKR_ENABLE_LOGGING=0>
 )
 if(USE_SOUNDTOUCH)
     # Hint CMake where the vcpkg-provided SoundTouch package lives.
@@ -41,21 +45,44 @@ if(USE_SOUNDTOUCH)
         $<TARGET_PROPERTY:SoundTouch::SoundTouch,INTERFACE_INCLUDE_DIRECTORIES>
     )
     target_link_libraries(krkr_common PUBLIC SoundTouch::SoundTouch)
+
+    function(copy_soundtouch_runtime target)
+        if(NOT TARGET SoundTouch::SoundTouch)
+            return()
+        endif()
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:SoundTouch::SoundTouch>
+                $<TARGET_FILE_DIR:${target}>
+            COMMENT "Copying SoundTouch runtime for ${target}"
+        )
+    endfunction()
 endif()
 
 if(WIN32)
-    add_library(krkr_speed_hook SHARED
-        src/hook/dllmain.cpp
+    add_library(krkr_hook_core STATIC
         src/hook/XAudio2Hook.cpp
         src/hook/DirectSoundHook.cpp
     )
-    target_link_libraries(krkr_speed_hook PRIVATE krkr_common)
+    target_link_libraries(krkr_hook_core PUBLIC krkr_common)
+    target_include_directories(krkr_hook_core PUBLIC src)
+
+    add_library(krkr_speed_hook SHARED
+        src/hook/dllmain.cpp
+    )
+    target_link_libraries(krkr_speed_hook PRIVATE krkr_hook_core)
+    if(USE_SOUNDTOUCH)
+        copy_soundtouch_runtime(krkr_speed_hook)
+    endif()
 
     if(BUILD_GUI)
-        add_executable(KrkrSpeedController
+        add_executable(KrkrSpeedController WIN32
             src/gui/main.cpp
         )
-        target_link_libraries(KrkrSpeedController PRIVATE krkr_common)
+        target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core)
+        if(USE_SOUNDTOUCH)
+            copy_soundtouch_runtime(KrkrSpeedController)
+        endif()
     endif()
 else()
     message(STATUS "Non-Windows host detected; building common library and tests only.")
@@ -67,6 +94,9 @@ if(BUILD_TESTS)
         tests/dsp_smoke.cpp
     )
     target_link_libraries(dsp_smoke PRIVATE krkr_common)
+    if(USE_SOUNDTOUCH)
+        copy_soundtouch_runtime(dsp_smoke)
+    endif()
     add_test(NAME dsp_smoke COMMAND dsp_smoke)
 endif()
 
