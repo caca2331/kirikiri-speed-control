@@ -17,3 +17,4 @@
 2025-12-08 03:19: Switched MSVC runtime to static (/MT) to remove VC++ redist dependency from the hook/GUI; dual-arch build now succeeds again.
 2025-12-08 03:50: Added a fallback to copy the hook + SoundTouch into the target’s exe directory and retry injection (full + short paths), added per-attempt diagnostics, and recompiled (staging may fail if dist binaries are in use).
 2025-12-08 04:00: Relaxed dual_arch staging to warn (not fail) if dist files are locked, using copy_if_different with remove-before-copy; build now completes even if an old controller is running.
+2025-12-08 14:30: Added CoCreateInstance hook for XAudio2_7 (COM activation) and routed GetProcAddress to it so legacy XAudio2 games patch CreateSourceVoice; hoping to make actual tempo changes take effect.

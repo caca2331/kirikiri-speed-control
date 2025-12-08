@@ -29,6 +29,8 @@ public:
     bool hasCreateHook() const { return m_origCreate != nullptr; }
 
     static HRESULT WINAPI XAudio2CreateHook(IXAudio2 **ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR XAudio2Processor);
+    static HRESULT WINAPI CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid,
+                                               LPVOID *ppv);
     static HRESULT __stdcall CreateSourceVoiceHook(IXAudio2 *self, IXAudio2SourceVoice **ppSourceVoice,
                                                    const WAVEFORMATEX *fmt, UINT32 Flags, float MaxFreqRatio,
                                                    IXAudio2VoiceCallback *cb, const XAUDIO2_EFFECT_CHAIN *chain,
@@ -54,7 +56,9 @@ private:
 
     // Original functions.
     using PFN_XAudio2Create = HRESULT(WINAPI *)(IXAudio2 **ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR XAudio2Processor);
+    using PFN_CoCreateInstance = HRESULT(WINAPI *)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID *);
     PFN_XAudio2Create m_origCreate = nullptr;
+    PFN_CoCreateInstance m_origCoCreate = nullptr;
 
     using PFN_CreateSourceVoice = HRESULT(__stdcall *)(IXAudio2 *, IXAudio2SourceVoice **, const WAVEFORMATEX *,
                                                        UINT32, float, IXAudio2VoiceCallback *,

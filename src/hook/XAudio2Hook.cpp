@@ -12,6 +12,9 @@ namespace krkrspeed {
 
 namespace {
 XAudio2Hook *g_self = nullptr;
+// XAudio2 2.7 COM CLSIDs (from xaudio2_7 GUIDs)
+const GUID kClsidXAudio2_27 = {0x5a508685, 0xa254, 0x4fba, {0x9b, 0x82, 0x9a, 0x24, 0xb0, 0x03, 0x06, 0xaf}};
+const GUID kClsidXAudio2Debug_27 = {0xe21fef06, 0x8c6b, 0x4e0a, {0x9a, 0x22, 0x0e, 0x0d, 0xe0, 0xf9, 0xf7, 0xe8}};
 }
 
 XAudio2Hook &XAudio2Hook::instance() {
@@ -52,6 +55,15 @@ void XAudio2Hook::hookEntryPoints() {
         m_version = "2.7";
         patched = true;
     }
+    if (!patched) {
+        // XAudio2_7 often uses COM activation.
+        if (PatchImport("ole32.dll", "CoCreateInstance", reinterpret_cast<void *>(&XAudio2Hook::CoCreateInstanceHook),
+                        reinterpret_cast<void **>(&m_origCoCreate))) {
+            m_version = "2.7";
+            patched = true;
+            KRKR_LOG_INFO("Patched CoCreateInstance import for XAudio2_7 detection");
+        }
+    }
 
     if (patched) {
         KRKR_LOG_INFO("Patched XAudio2Create import for version " + m_version);
@@ -84,6 +96,27 @@ void XAudio2Hook::configureLengthGate(bool enabled, float seconds) {
     m_lengthGateSeconds = std::clamp(seconds, 0.1f, 600.0f);
     KRKR_LOG_INFO(std::string("Length gate ") + (enabled ? "enabled" : "disabled") + " at " +
                   std::to_string(m_lengthGateSeconds) + "s");
+}
+
+HRESULT WINAPI XAudio2Hook::CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnkOuter, DWORD dwClsContext, REFIID riid,
+                                                 LPVOID *ppv) {
+    if (!g_self || !g_self->m_origCoCreate) {
+        return REGDB_E_CLASSNOTREG;
+    }
+    const bool isXAudioClsid = IsEqualCLSID(rclsid, kClsidXAudio2_27) || IsEqualCLSID(rclsid, kClsidXAudio2Debug_27);
+    const HRESULT hr = g_self->m_origCoCreate(rclsid, pUnkOuter, dwClsContext, riid, ppv);
+    if (FAILED(hr) || !ppv || !*ppv || !isXAudioClsid) {
+        return hr;
+    }
+
+    g_self->m_version = "2.7";
+    auto *xa2 = reinterpret_cast<IXAudio2 *>(*ppv);
+    void **vtbl = *reinterpret_cast<void ***>(xa2);
+    if (!g_self->m_origCreateSourceVoice) {
+        PatchVtableEntry(vtbl, 7, &XAudio2Hook::CreateSourceVoiceHook, g_self->m_origCreateSourceVoice);
+        KRKR_LOG_INFO("IXAudio2 vtable patched via CoCreateInstance (CreateSourceVoice)");
+    }
+    return hr;
 }
 
 HRESULT WINAPI XAudio2Hook::XAudio2CreateHook(IXAudio2 **ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR proc) {

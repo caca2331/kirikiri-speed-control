@@ -8,6 +8,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -82,24 +83,107 @@ LoggerState &state() {
     return instance;
 }
 
+std::filesystem::path moduleDirectory() {
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) == 0) {
+        return {};
+    }
+    std::filesystem::path p(buffer);
+    return p.parent_path();
+#else
+    return {};
+#endif
+}
+
+void pruneOldLogs(const std::filesystem::path &dir) {
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        const auto name = entry.path().filename().string();
+        if (name.rfind("krkr_", 0) == 0 && entry.path().extension() == ".log") {
+            std::filesystem::remove(entry.path(), ec);
+        }
+    }
+}
+
+std::filesystem::path readHintPath() {
+    std::error_code ec;
+    auto temp = std::filesystem::temp_directory_path(ec);
+    if (ec) return {};
+    auto hintFile = temp / "krkr_log_dir.txt";
+    if (!std::filesystem::exists(hintFile)) return {};
+    std::ifstream in(hintFile);
+    if (!in) return {};
+    std::string line;
+    std::getline(in, line);
+    if (line.empty()) return {};
+    std::filesystem::path p(line);
+    if (std::filesystem::exists(p) && std::filesystem::is_directory(p)) {
+        return p;
+    }
+    return {};
+}
+
+std::filesystem::path executableStem() {
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, buffer, MAX_PATH) == 0) {
+        return {};
+    }
+    return std::filesystem::path(buffer).stem();
+#else
+    return {};
+#endif
+}
+
+std::filesystem::path chooseLogDirectory() {
+    // 1) env var
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"KRKR_LOG_DIR", buf, MAX_PATH) > 0) {
+        std::filesystem::path p(buf);
+        if (std::filesystem::exists(p) && std::filesystem::is_directory(p)) return p;
+    }
+#endif
+    // 2) hint file in temp
+    auto hint = readHintPath();
+    if (!hint.empty()) return hint;
+    // 3) module directory
+    auto mod = moduleDirectory();
+    if (!mod.empty()) return mod;
+    // 4) temp
+    std::error_code ec;
+    return std::filesystem::temp_directory_path(ec);
+}
+
 void ensureOpen(LoggerState &stateRef) {
     if (stateRef.initialized) {
         return;
     }
     stateRef.initialized = true;
 
+    auto dir = chooseLogDirectory();
     std::error_code ec;
-    auto dir = std::filesystem::temp_directory_path(ec);
-    if (ec) {
-        return;
+
+    auto stem = executableStem();
+    std::string base = "krkr_speed";
+    if (!stem.empty()) {
+        auto s = stem.string();
+        if (s == "KrkrSpeedController") base = "krkr_controller";
+        else if (s == "krkr_speed_hook") base = "krkr_hook";
     }
 
-    const auto pid = currentProcessId();
-    auto path = dir / ("krkr_speed_" + std::to_string(pid) + ".log");
-    stateRef.stream.open(path, std::ios::out | std::ios::app);
+    pruneOldLogs(dir);
+    const auto path = dir / (base + ".log");
+    std::filesystem::remove(path, ec);
+
+    stateRef.stream.open(path, std::ios::out | std::ios::trunc);
     if (stateRef.stream.is_open()) {
         stateRef.path = path.string();
-        stateRef.stream << "----- log start " << currentTimestamp() << " (pid " << pid << ") -----" << std::endl;
+        stateRef.stream << "----- log start " << currentTimestamp() << " (pid " << currentProcessId() << ") -----"
+                        << std::endl;
     }
 }
 

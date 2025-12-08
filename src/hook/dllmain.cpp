@@ -20,6 +20,9 @@ namespace {
             xa.setOriginalCreate(reinterpret_cast<void *>(fn));
             return reinterpret_cast<FARPROC>(&krkrspeed::XAudio2Hook::XAudio2CreateHook);
         }
+        if (_stricmp(procName, "CoCreateInstance") == 0) {
+            return reinterpret_cast<FARPROC>(&krkrspeed::XAudio2Hook::CoCreateInstanceHook);
+        }
         if (_stricmp(procName, "DirectSoundCreate8") == 0) {
             auto &ds = krkrspeed::DirectSoundHook::instance();
             ds.setOriginalCreate8(reinterpret_cast<void *>(fn));

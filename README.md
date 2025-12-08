@@ -60,8 +60,9 @@ ctest --test-dir build -V
 
 ## Runtime Notes
 - When `USE_SOUNDTOUCH=ON`, the build now stages `SoundTouch.dll` beside `KrkrSpeedController.exe`, `krkr_speed_hook.dll`, and `dsp_smoke.exe` so the binaries run without manual dependency copying.
-- With `ENABLE_LOGGING=ON` (default), each binary writes to `%TEMP%/krkr_speed_<pid>.log`, covering the controller UI,
-  hook DLL, and smoke tests for easier troubleshooting. Disable logging at configure time if you want silent binaries.
+- With `ENABLE_LOGGING=ON` (default), the controller and hook write `krkr_controller.log` / `krkr_hook.log` beside the
+  binaries, overwriting on launch and pruning old `krkr_*.log` in that folder. If the folder is unwritable, logging falls
+  back to `%TEMP%`. Disable logging at configure time if you want silent binaries.
 - `KrkrSpeedController.exe` opens a Win32 UI: refresh the running process list (filters to your session + visible windows),
   select a target, enter a speed between 0.5 and 10× (recommended 0.75–2×), and press “Hook + Apply” to attempt
   `krkr_speed_hook.dll` injection from the same folder. A checkbox + seconds box (default 30s) gates processing so only
@@ -145,8 +146,8 @@ ctest --test-dir build -V
 
 ## 运行说明
 - 当启用`USE_SOUNDTOUCH=ON`时，构建会自动把`SoundTouch.dll`放到`KrkrSpeedController.exe`、`krkr_speed_hook.dll`和`dsp_smoke.exe`同目录下，无需手动拷贝依赖即可运行。
-- `ENABLE_LOGGING=ON`（默认）时，每个进程都会写日志到`%TEMP%/krkr_speed_<pid>.log`，覆盖控制器、Hook DLL和冒烟
-  测试，便于排查问题；如需静默运行可在配置阶段关闭日志。
+- `ENABLE_LOGGING=ON`（默认）时，控制器与Hook会在同目录生成`krkr_controller.log` / `krkr_hook.log`（启动时覆盖并清理该目录旧的
+  `krkr_*.log`）；若目录不可写则回退到`%TEMP%`。如需静默运行可在配置阶段关闭日志。
 - `KrkrSpeedController.exe` 现为Win32界面：刷新进程列表（仅显示当前会话且有可见窗口的进程）、选择目标、输入0.5–10倍
   速（推荐0.75–2倍），点击“Hook + Apply”尝试从同目录注入`krkr_speed_hook.dll`；旁边的复选框+秒数输入（默认30秒）
   用于按长度区分，勾选时只对短于阈值的缓冲做变速，取消勾选则全部变速。界面会提前检测架构是否匹配——32位游戏请使用Win32构建，
