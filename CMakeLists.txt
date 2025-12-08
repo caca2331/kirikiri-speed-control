@@ -78,8 +78,9 @@ if(WIN32)
     if(BUILD_GUI)
         add_executable(KrkrSpeedController WIN32
             src/gui/main.cpp
+            src/gui/ui.cpp
         )
-        target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core)
+        target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32)
         if(USE_SOUNDTOUCH)
             copy_soundtouch_runtime(KrkrSpeedController)
         endif()

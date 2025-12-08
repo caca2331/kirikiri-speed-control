@@ -18,6 +18,8 @@ struct VoiceContext {
     float engineRatio = 1.0f;
     float effectiveSpeed = 1.0f;
     bool isVoice = true;
+    std::uint32_t sampleRate = 0;
+    std::uint32_t channels = 0;
 
     std::deque<BufferMeta> pendingBuffers;
 };

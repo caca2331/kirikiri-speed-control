@@ -18,8 +18,9 @@ This repository contains an early scaffold for a Kirikiri voice speed controller
   buffer handling and hook registration points for future implementation.
 - `src/hook/dllmain.cpp`: DLL entry that initializes logging and kicks off hook setup on load; currently stubbed to avoid
   running on unsupported hosts during development.
-- `src/gui/main.cpp`: Win32 controller UI with a refreshable process dropdown, speed entry box (0.75–2.0×), and “Hook +
-  Apply” button that attempts to inject `krkr_speed_hook.dll` into the selected PID; closing the window exits the app.
+- `src/gui/main.cpp` / `src/gui/ui.cpp`: Win32 controller UI with a refreshable process dropdown, clamped speed entry box
+  (0.5–10×, recommend 0.75–2×), a length gate toggle + seconds field, tooltips on hover, and a “Hook + Apply” button that
+  attempts to inject `krkr_speed_hook.dll` into the selected PID; closing the window exits the app.
 - `tests/dsp_smoke.cpp`: Generates synthetic sine data to validate tempo changes across multiple ratios and channel counts,
   emitting log lines alongside console output so runs are traceable even if the console closes quickly.
 
@@ -43,9 +44,11 @@ ctest --test-dir build -V
 - When `USE_SOUNDTOUCH=ON`, the build now stages `SoundTouch.dll` beside `KrkrSpeedController.exe`, `krkr_speed_hook.dll`, and `dsp_smoke.exe` so the binaries run without manual dependency copying.
 - With `ENABLE_LOGGING=ON` (default), each binary writes to `%TEMP%/krkr_speed_<pid>.log`, covering the controller UI,
   hook DLL, and smoke tests for easier troubleshooting. Disable logging at configure time if you want silent binaries.
-- `KrkrSpeedController.exe` opens a Win32 UI: refresh the running process list, select a target, enter a speed between 0.75
-  and 2.0×, and press “Hook + Apply” to attempt `krkr_speed_hook.dll` injection from the same folder. Closing the window
-  cleanly exits the controller.
+- `KrkrSpeedController.exe` opens a Win32 UI: refresh the running process list (filters to your session + visible windows),
+  select a target, enter a speed between 0.5 and 10× (recommended 0.75–2×), and press “Hook + Apply” to attempt
+  `krkr_speed_hook.dll` injection from the same folder. A checkbox + seconds box (default 30s) gates processing so only
+  buffers shorter than the threshold are stretched; uncheck to process all audio. Closing the window cleanly exits the
+  controller.
 - `dsp_smoke.exe` prints progress to stdout and logs so the run is traceable even when launched by double-clicking.
 
 ## Next Steps
@@ -73,7 +76,8 @@ ctest --test-dir build -V
 - `src/hook/DirectSoundHook.h` / `src/hook/DirectSoundHook.cpp`：DirectSound8拦截的空架构，描述影子缓冲处理和未来的Hook注
   册入口。
 - `src/hook/dllmain.cpp`：DLL入口，在加载时初始化日志并启动Hook设置；为避免在不支持的主机上运行，目前保持空操作。
-- `src/gui/main.cpp`：Win32控制器界面，带可刷新进程下拉框、0.75–2.0倍速输入框和“Hook + Apply”按钮，尝试将
+- `src/gui/main.cpp` / `src/gui/ui.cpp`：Win32控制器界面，带可刷新进程下拉框（过滤到当前会话且有可见窗口的进程）、
+  0.5–10倍速输入框（推荐0.75–2倍）、长度阈值开关+秒数输入、悬停提示，以及“Hook + Apply”按钮，尝试将
   `krkr_speed_hook.dll`注入选定PID，关闭窗口即退出。
 - `tests/dsp_smoke.cpp`：生成合成正弦波数据，在多种倍速和声道数量下验证变速效果，并同步写入日志，便于在控制台关闭
   时仍能追踪运行情况。
@@ -98,8 +102,9 @@ ctest --test-dir build -V
 - 当启用`USE_SOUNDTOUCH=ON`时，构建会自动把`SoundTouch.dll`放到`KrkrSpeedController.exe`、`krkr_speed_hook.dll`和`dsp_smoke.exe`同目录下，无需手动拷贝依赖即可运行。
 - `ENABLE_LOGGING=ON`（默认）时，每个进程都会写日志到`%TEMP%/krkr_speed_<pid>.log`，覆盖控制器、Hook DLL和冒烟
   测试，便于排查问题；如需静默运行可在配置阶段关闭日志。
-- `KrkrSpeedController.exe` 现为Win32界面：刷新进程列表、选择目标、输入0.75–2.0倍速，点击“Hook + Apply”尝试从
-  同目录注入`krkr_speed_hook.dll`；关闭窗口即退出控制器。
+- `KrkrSpeedController.exe` 现为Win32界面：刷新进程列表（仅显示当前会话且有可见窗口的进程）、选择目标、输入0.5–10倍
+  速（推荐0.75–2倍），点击“Hook + Apply”尝试从同目录注入`krkr_speed_hook.dll`；旁边的复选框+秒数输入（默认30秒）
+  用于按长度区分，勾选时只对短于阈值的缓冲做变速，取消勾选则全部变速。关闭窗口即退出控制器。
 - `dsp_smoke.exe` 会同时输出到控制台和日志，即使双击运行控制台快速关闭，也能在日志中查看结果。
 
 ## 下一步计划
