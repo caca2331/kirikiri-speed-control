@@ -71,19 +71,24 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
     const std::size_t maxFrames = static_cast<std::size_t>(std::ceil(frameCount / std::max(0.1f, tempo)) + 1024);
     m_impl->scratch.resize(maxFrames * m_channels);
 
-    const auto receivedFrames = m_impl->touch.receiveSamples(m_impl->scratch.data(), maxFrames);
-    const std::size_t receivedSamples = receivedFrames * m_channels;
-
-    if constexpr (kIsFloat) {
-        output.resize(receivedSamples * sizeof(std::int16_t));
-        auto *outPcm = reinterpret_cast<std::int16_t *>(output.data());
-        for (std::size_t i = 0; i < receivedSamples; ++i) {
-            const float clamped = std::clamp(m_impl->scratch[i], -1.0f, 1.0f);
-            outPcm[i] = static_cast<std::int16_t>(std::lround(clamped * 32767.0f));
+    while (true) {
+        const auto receivedFrames = m_impl->touch.receiveSamples(m_impl->scratch.data(), maxFrames);
+        if (receivedFrames == 0) break;
+        const std::size_t receivedSamples = receivedFrames * m_channels;
+        if constexpr (kIsFloat) {
+            std::size_t prev = output.size();
+            output.resize(prev + receivedSamples * sizeof(std::int16_t));
+            auto *outPcm = reinterpret_cast<std::int16_t *>(output.data() + prev);
+            for (std::size_t i = 0; i < receivedSamples; ++i) {
+                const float clamped = std::clamp(m_impl->scratch[i], -1.0f, 1.0f);
+                outPcm[i] = static_cast<std::int16_t>(std::lround(clamped * 32767.0f));
+            }
+        } else {
+            std::size_t prev = output.size();
+            output.resize(prev + receivedSamples * sizeof(std::int16_t));
+            std::memcpy(output.data() + prev, m_impl->scratch.data(), receivedSamples * sizeof(std::int16_t));
         }
-    } else {
-        output.resize(receivedSamples * sizeof(std::int16_t));
-        std::memcpy(output.data(), m_impl->scratch.data(), output.size());
+        if (output.size() >= bytes) break; // collected at least input length
     }
     return output;
 #else

@@ -69,8 +69,9 @@ ctest --test-dir build -V
   / `KRKR_WAVEOUT_PASSTHROUGH=1` keep hooks but bypass DSP, `KRKR_DISABLE_DSP=1` disables DSP globally, and `KRKR_LOG_DIR=<path>`
   forces log output next to the binaries (the controller also drops a `%TEMP%\\krkr_log_dir.txt` hint automatically).
 - DirectSound hooks are now opt-in: set `KRKR_ENABLE_DS=1` to activate DS interception; otherwise the DS hook stays disabled.
-  When enabled, processing remains limited to PCM16 secondary buffers; primary/non-PCM buffers are left untouched, and
-  invalid pointers fall back to passthrough to avoid crashes.
+  `KRKR_DS_DISABLE_VTABLE=1` skips all DirectSound vtable patching (safest); leave it unset to use per-instance shadow
+  vtables (no writes into dsound.dll). `KRKR_DS_LOG_ONLY=1` keeps DS log-only (no Unlock processing). Processing remains
+  limited to PCM16 secondary buffers; primary/non-PCM buffers are left untouched, and invalid pointers fall back to passthrough.
 - The controller now writes speed/length-gate settings into a per-target shared memory block (`Local\\KrkrSpeedSettings_<pid>`); the injected DLL polls it so GUI slider changes take effect after injection.
 - `KrkrSpeedController.exe` opens a Win32 UI: refresh the running process list (filters to your session + visible windows),
   select a target, enter a speed between 0.5 and 10× (recommended 0.75–2×), and press “Hook + Apply” to attempt

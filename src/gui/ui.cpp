@@ -41,8 +41,8 @@ struct ProcessInfo {
 
 struct AppState {
     std::vector<ProcessInfo> processes;
-    float currentSpeed = 1.0f;
-    float lastValidSpeed = 1.0f;
+    float currentSpeed = 2.0f;
+    float lastValidSpeed = 2.0f;
     float lastValidDuration = 30.0f;
     bool lengthGateEnabled = true;
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
@@ -817,7 +817,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                        0, 10, 100, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRefreshButtonId)), nullptr, nullptr);
 
         CreateWindowExW(0, L"STATIC", L"Speed (0.5-10, suggest 0.75-2)", WS_CHILD | WS_VISIBLE, 12, 40, 220, 20, hwnd, nullptr, nullptr, nullptr);
-        HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"1.00",
+        HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"2.00",
                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                          140, 38, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
         HWND apply = CreateWindowExW(0, L"BUTTON", L"Hook + Apply", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,

@@ -36,6 +36,11 @@ void DirectSoundHook::initialize() {
     hookEntryPoints();
     scanLoadedModules();
     bootstrapVtable();
+#if !defined(_WIN64)
+    installGlobalUnlockHook();
+#else
+    KRKR_LOG_INFO("Global Unlock hook skipped on x64 build");
+#endif
 }
 
 void DirectSoundHook::setOriginalCreate8(void *fn) {
@@ -76,16 +81,7 @@ HRESULT WINAPI DirectSoundHook::DirectSoundCreate8Hook(LPCGUID pcGuidDevice, LPD
         return hr;
     }
 
-    if (hook.m_disableVtablePatch) {
-        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping CreateSoundBuffer patch");
-        return hr;
-    }
-
-    void **vtbl = *reinterpret_cast<void ***>(*ppDS8);
-    if (!hook.m_origCreateBuffer) {
-        PatchVtableEntry(vtbl, 3, &DirectSoundHook::CreateSoundBufferHook, hook.m_origCreateBuffer);
-        KRKR_LOG_INFO("Patched IDirectSound8 vtable (CreateSoundBuffer)");
-    }
+    hook.patchDeviceVtable(*ppDS8);
     return hr;
 }
 
@@ -106,16 +102,7 @@ HRESULT WINAPI DirectSoundHook::DirectSoundCreateHook(LPCGUID pcGuidDevice, LPDI
     if (FAILED(hr) || !ds8) {
         return hr;
     }
-    if (hook.m_disableVtablePatch) {
-        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping vtable patch via DirectSoundCreate");
-        *ppDS = ds8;
-        return hr;
-    }
-    void **vtbl = *reinterpret_cast<void ***>(ds8);
-    if (!hook.m_origCreateBuffer) {
-        PatchVtableEntry(vtbl, 3, &DirectSoundHook::CreateSoundBufferHook, hook.m_origCreateBuffer);
-        KRKR_LOG_INFO("Patched IDirectSound vtable (CreateSoundBuffer) via DirectSoundCreate");
-    }
+    hook.patchDeviceVtable(ds8);
     *ppDS = ds8;
     return hr;
 }
@@ -165,15 +152,7 @@ void DirectSoundHook::bootstrapVtable() {
         if (!ds8) return;
     }
     ds8->SetCooperativeLevel(GetDesktopWindow(), DSSCL_PRIORITY);
-    if (!m_disableVtablePatch) {
-        void **vtbl = *reinterpret_cast<void ***>(ds8);
-        if (!m_origCreateBuffer) {
-            PatchVtableEntry(vtbl, 3, &DirectSoundHook::CreateSoundBufferHook, m_origCreateBuffer);
-            KRKR_LOG_INFO("Bootstrapped IDirectSound8 vtable (CreateSoundBuffer)");
-        }
-    } else {
-        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping bootstrap vtable patch");
-    }
+    patchDeviceVtable(ds8);
     ds8->Release();
 }
 
@@ -193,6 +172,9 @@ HRESULT WINAPI DirectSoundHook::CreateSoundBufferHook(IDirectSound8 *self, LPDIR
                          " ch=" + std::to_string(fmt->nChannels) + " sr=" + std::to_string(fmt->nSamplesPerSec) +
                          " bytes=" + std::to_string(pcDSBufferDesc->dwBufferBytes) +
                          " flags=0x" + std::to_string(pcDSBufferDesc->dwFlags);
+    KRKR_LOG_INFO("DS CreateSoundBuffer " + fmtKey + " buffer=" +
+                  std::to_string(reinterpret_cast<std::uintptr_t>(*ppDSBuffer)) +
+                  (hook.m_logOnly ? " [log-only]" : ""));
     const bool isPrimary = (pcDSBufferDesc->dwFlags & DSBCAPS_PRIMARYBUFFER) != 0;
     const bool isPcm16 = fmt->wFormatTag == WAVE_FORMAT_PCM && fmt->wBitsPerSample == 16;
     {
@@ -215,25 +197,7 @@ HRESULT WINAPI DirectSoundHook::CreateSoundBufferHook(IDirectSound8 *self, LPDIR
         return hr;
     }
 
-    void **vtbl = *reinterpret_cast<void ***>(*ppDSBuffer);
-    if (!hook.m_origUnlock) {
-        auto candidate = vtbl[19];
-        HMODULE dsMod = GetModuleHandleA("dsound.dll");
-        MODULEINFO mi{};
-        if (dsMod && GetModuleInformation(GetCurrentProcess(), dsMod, &mi, sizeof(mi))) {
-            const auto base = reinterpret_cast<std::uintptr_t>(mi.lpBaseOfDll);
-            const auto end = base + mi.SizeOfImage;
-            const auto addr = reinterpret_cast<std::uintptr_t>(candidate);
-            if (addr >= base && addr < end) {
-                PatchVtableEntry(vtbl, 19, &DirectSoundHook::UnlockHook, hook.m_origUnlock);
-                KRKR_LOG_INFO("Patched IDirectSoundBuffer vtable (Unlock)");
-            } else {
-                KRKR_LOG_WARN("Skip Unlock patch: vtable entry not in dsound.dll");
-            }
-        } else {
-            KRKR_LOG_WARN("Skip Unlock patch: cannot query dsound.dll module info");
-        }
-    }
+    hook.patchBufferVtable(*ppDSBuffer);
 
     // Track buffer format.
     std::lock_guard<std::mutex> lock(hook.m_mutex);
@@ -291,6 +255,11 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         DWORD n = GetEnvironmentVariableW(L"KRKR_DISABLE_DSP", buf, static_cast<DWORD>(std::size(buf)));
         return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
     }();
+    static bool zeroOnUnlock = []{
+        wchar_t buf[8] = {};
+        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_ZERO_ON_UNLOCK", buf, static_cast<DWORD>(std::size(buf)));
+        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
+    }();
     if (!m_loggedUnlockOnce.exchange(true)) {
         KRKR_LOG_INFO("DirectSound UnlockHook engaged on buffer=" +
                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
@@ -319,6 +288,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     }
 
     if (combined.empty()) {
+        KRKR_LOG_DEBUG("DS Unlock: combined buffer empty");
         return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
     }
 
@@ -340,26 +310,101 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
             const float userSpeed = XAudio2Hook::instance().getUserSpeed();
             const bool gate = XAudio2Hook::instance().isLengthGateEnabled();
             const float gateSeconds = XAudio2Hook::instance().lengthGateSeconds();
+            auto &info = it->second;
+            info.unlockCount++;
 
             const std::size_t frames = (combined.size() / sizeof(std::int16_t)) /
-                                       std::max<std::uint32_t>(1, it->second.channels);
+                                       std::max<std::uint32_t>(1, info.channels);
             const float durationSec =
-                static_cast<float>(frames) / static_cast<float>(std::max<std::uint32_t>(1, it->second.sampleRate));
-            if (!disableDsp && (!gate || durationSec <= gateSeconds)) {
-                auto out = it->second.dsp->process(combined.data(), combined.size(), userSpeed);
-                if (!out.empty()) {
+                static_cast<float>(frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
+            const bool doDsp = !disableDsp && (!gate || durationSec <= gateSeconds);
+            const bool shouldLog = info.unlockCount <= 5 || (info.unlockCount % 50 == 0);
+            if (shouldLog) {
+                KRKR_LOG_DEBUG("DS Unlock: buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                               " bytes=" + std::to_string(combined.size()) +
+                               " ch=" + std::to_string(info.channels) +
+                               " sr=" + std::to_string(info.sampleRate) +
+                               " dur=" + std::to_string(durationSec) +
+                               " apply=" + (doDsp ? "1" : "0") +
+                               " speed=" + std::to_string(userSpeed));
+            }
+            if (doDsp) {
+                auto out = info.dsp->process(combined.data(), combined.size(), userSpeed);
+                if (out.empty()) {
+                    if (shouldLog) {
+                        KRKR_LOG_DEBUG("DS DSP produced 0 bytes; passthrough for buf=" +
+                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                    }
+                } else {
                     if (out.size() >= combined.size()) {
                         std::copy_n(out.data(), combined.size(), combined.begin());
                     } else {
                         std::copy(out.begin(), out.end(), combined.begin());
                         std::fill(combined.begin() + out.size(), combined.end(), 0);
                     }
+                    if (shouldLog) {
+                        KRKR_LOG_DEBUG("DS DSP applied: in=" + std::to_string(combined.size()) +
+                                       " out=" + std::to_string(out.size()) +
+                                       " buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                    }
                 }
             }
         } else {
-            // Unknown buffer; safety pass-through.
-            return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+            // Unknown buffer: try to discover format and start tracking.
+            WAVEFORMATEX wfx{};
+            DWORD cb = 0;
+            if (SUCCEEDED(self->GetFormat(nullptr, 0, &cb)) && cb >= sizeof(WAVEFORMATEX)) {
+                std::vector<std::uint8_t> fmtBuf(cb);
+                if (SUCCEEDED(self->GetFormat(reinterpret_cast<LPWAVEFORMATEX>(fmtBuf.data()), cb, nullptr))) {
+                    const auto *fx = reinterpret_cast<const WAVEFORMATEX *>(fmtBuf.data());
+                    BufferInfo info;
+                    info.sampleRate = fx->nSamplesPerSec;
+                    info.channels = fx->nChannels;
+                    info.bitsPerSample = fx->wBitsPerSample;
+                    info.formatTag = fx->wFormatTag;
+                    info.isPcm16 = (fx->wFormatTag == WAVE_FORMAT_PCM && fx->wBitsPerSample == 16);
+                    info.loggedFormat = false;
+                    DspConfig cfg{};
+                    info.dsp = std::make_unique<DspPipeline>(info.sampleRate, info.channels, cfg);
+                    m_buffers[reinterpret_cast<std::uintptr_t>(self)] = std::move(info);
+                    KRKR_LOG_INFO("DS Unlock: tracked buffer=" +
+                                  std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                  " fmt=" + std::to_string(fx->wFormatTag) +
+                                  " bits=" + std::to_string(fx->wBitsPerSample) +
+                                  " ch=" + std::to_string(fx->nChannels) +
+                                  " sr=" + std::to_string(fx->nSamplesPerSec));
+                    // Patch this buffer's vtable via shadow to ensure future calls are ours.
+                    patchBufferVtable(self);
+                } else {
+                    KRKR_LOG_WARN("DS Unlock: GetFormat failed for untracked buffer; passthrough");
+                    return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+                }
+            } else {
+                KRKR_LOG_WARN("DS Unlock: GetFormat size query failed for untracked buffer; passthrough");
+                return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+            }
+            // Re-run processing with newly tracked buffer on this same call.
+            auto it2 = m_buffers.find(reinterpret_cast<std::uintptr_t>(self));
+            if (it2 == m_buffers.end() || !it2->second.dsp) {
+                KRKR_LOG_WARN("DS Unlock: tracking failed; passthrough");
+                return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+            }
+            it = it2;
+            if (!it->second.isPcm16) {
+                KRKR_LOG_WARN("DirectSound buffer format not PCM16 (after late track); skipping DSP. fmt=" +
+                              std::to_string(it->second.formatTag) + " bits=" +
+                              std::to_string(it->second.bitsPerSample) + " ch=" +
+                              std::to_string(it->second.channels) + " sr=" +
+                              std::to_string(it->second.sampleRate));
+                return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+            }
         }
+    }
+
+    // Optional: zero buffer to verify writeback path.
+    if (zeroOnUnlock) {
+        std::fill(combined.begin(), combined.end(), 0);
+        KRKR_LOG_INFO("DS Unlock: zeroed buffer per KRKR_DS_ZERO_ON_UNLOCK");
     }
 
     // Write combined buffer back into the two regions.
@@ -373,6 +418,136 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     }
 
     return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+}
+
+void DirectSoundHook::patchDeviceVtable(IDirectSound8 *ds8) {
+    if (!ds8) return;
+    if (m_disableVtablePatch) {
+        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping device vtable patch");
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_vtableMutex);
+    if (m_deviceVtables.find(ds8) != m_deviceVtables.end()) {
+        return;
+    }
+    void **origVtbl = *reinterpret_cast<void ***>(ds8);
+    if (!origVtbl) return;
+
+    if (!m_origCreateBuffer) {
+        m_origCreateBuffer = reinterpret_cast<PFN_CreateSoundBuffer>(origVtbl[3]);
+    }
+
+    constexpr size_t kCount = 32;
+    std::vector<void *> shadow(kCount);
+    for (size_t i = 0; i < kCount; ++i) shadow[i] = origVtbl[i];
+    shadow[3] = reinterpret_cast<void *>(&DirectSoundHook::CreateSoundBufferHook);
+
+    *reinterpret_cast<void ***>(ds8) = shadow.data();
+    m_deviceVtables[ds8] = std::move(shadow);
+    KRKR_LOG_INFO("Applied shadow vtable for IDirectSound8 instance (CreateSoundBuffer)");
+}
+
+void DirectSoundHook::patchBufferVtable(IDirectSoundBuffer *buf) {
+    if (!buf) return;
+    if (m_disableVtablePatch) {
+        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping buffer vtable patch");
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_vtableMutex);
+    if (m_bufferVtables.find(buf) != m_bufferVtables.end()) {
+        return;
+    }
+    void **origVtbl = *reinterpret_cast<void ***>(buf);
+    if (!origVtbl) return;
+
+    if (!m_origUnlock) {
+        m_origUnlock = reinterpret_cast<PFN_Unlock>(origVtbl[19]);
+    }
+
+    constexpr size_t kCount = 32;
+    std::vector<void *> shadow(kCount);
+    for (size_t i = 0; i < kCount; ++i) shadow[i] = origVtbl[i];
+    shadow[19] = reinterpret_cast<void *>(&DirectSoundHook::UnlockHook);
+
+    *reinterpret_cast<void ***>(buf) = shadow.data();
+    m_bufferVtables[buf] = std::move(shadow);
+    KRKR_LOG_INFO("Applied shadow vtable for IDirectSoundBuffer instance (Unlock)");
+}
+
+void DirectSoundHook::installGlobalUnlockHook() {
+#if defined(_WIN64)
+    return;
+#else
+    // Build a temporary DS buffer to discover the real Unlock implementation.
+    if (!m_origCreate8 && !m_origCreate) return;
+    IDirectSound8 *ds8 = nullptr;
+    if (m_origCreate8) {
+        if (FAILED(m_origCreate8(nullptr, &ds8, nullptr)) || !ds8) return;
+    } else {
+        IDirectSound *ds = nullptr;
+        if (FAILED(m_origCreate(nullptr, &ds, nullptr)) || !ds) return;
+        ds->QueryInterface(IID_IDirectSound8, reinterpret_cast<void **>(&ds8));
+        ds->Release();
+        if (!ds8) return;
+    }
+    ds8->SetCooperativeLevel(GetDesktopWindow(), DSSCL_PRIORITY);
+    WAVEFORMATEX wfx{};
+    wfx.wFormatTag = WAVE_FORMAT_PCM;
+    wfx.nChannels = 1;
+    wfx.nSamplesPerSec = 44100;
+    wfx.wBitsPerSample = 16;
+    wfx.nBlockAlign = (wfx.nChannels * wfx.wBitsPerSample) / 8;
+    wfx.nAvgBytesPerSec = wfx.nBlockAlign * wfx.nSamplesPerSec;
+    DSBUFFERDESC desc{};
+    desc.dwSize = sizeof(desc);
+    desc.dwFlags = DSBCAPS_GETCURRENTPOSITION2;
+    desc.dwBufferBytes = wfx.nAvgBytesPerSec / 2;
+    desc.lpwfxFormat = &wfx;
+    IDirectSoundBuffer *tmp = nullptr;
+    if (FAILED(ds8->CreateSoundBuffer(&desc, &tmp, nullptr)) || !tmp) {
+        ds8->Release();
+        return;
+    }
+    void **vtbl = *reinterpret_cast<void ***>(tmp);
+    void *target = vtbl ? vtbl[19] : nullptr;
+    tmp->Release();
+    ds8->Release();
+    if (!target) return;
+
+    // Prepare trampoline.
+    static BYTE saved[5]{};
+    static BYTE *trampoline = nullptr;
+    static PFN_Unlock orig = nullptr;
+    if (orig) return; // already installed
+    orig = m_origUnlock ? m_origUnlock : reinterpret_cast<PFN_Unlock>(target);
+
+    DWORD oldProtect = 0;
+    VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
+    std::memcpy(saved, target, 5);
+
+    trampoline = reinterpret_cast<BYTE *>(VirtualAlloc(nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!trampoline) {
+        VirtualProtect(target, 5, oldProtect, &oldProtect);
+        return;
+    }
+    // trampoline: original bytes + jmp back
+    std::memcpy(trampoline, saved, 5);
+    intptr_t backRel = (reinterpret_cast<BYTE *>(target) + 5) - (trampoline + 5) - 5;
+    trampoline[5] = 0xE9;
+    *reinterpret_cast<int32_t *>(trampoline + 6) = static_cast<int32_t>(backRel);
+
+    // patch target to jump to our hook
+    intptr_t rel = reinterpret_cast<BYTE *>(&DirectSoundHook::UnlockHook) - (reinterpret_cast<BYTE *>(target) + 5);
+    BYTE patch[5] = {0xE9};
+    *reinterpret_cast<int32_t *>(patch + 1) = static_cast<int32_t>(rel);
+    std::memcpy(target, patch, 5);
+    VirtualProtect(target, 5, oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), target, 5);
+
+    // update m_origUnlock to trampoline so UnlockHook can call through.
+    m_origUnlock = reinterpret_cast<PFN_Unlock>(trampoline);
+    KRKR_LOG_INFO("Installed global Unlock detour via inline jump");
+#endif
 }
 
 } // namespace krkrspeed

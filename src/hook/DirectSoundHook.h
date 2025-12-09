@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 #include "../common/DspPipeline.h"
 #include "../common/VoiceContext.h"
 
@@ -23,6 +24,10 @@ public:
     void bootstrapVtable();
     bool hasCreateHook() const { return m_origCreate8 != nullptr; }
     bool isLogOnly() const { return m_logOnly; }
+
+    void patchDeviceVtable(IDirectSound8 *ds8);
+    void patchBufferVtable(IDirectSoundBuffer *buf);
+    void installGlobalUnlockHook();
 
     static HRESULT WINAPI DirectSoundCreate8Hook(LPCGUID pcGuidDevice, LPDIRECTSOUND8 *ppDS8, LPUNKNOWN pUnkOuter);
     static HRESULT WINAPI DirectSoundCreateHook(LPCGUID pcGuidDevice, LPDIRECTSOUND *ppDS, LPUNKNOWN pUnkOuter);
@@ -58,10 +63,15 @@ private:
         std::uint16_t formatTag = WAVE_FORMAT_PCM;
         bool loggedFormat = false;
         std::unique_ptr<DspPipeline> dsp;
+        std::uint64_t unlockCount = 0;
+        std::uint64_t lastLogCount = 0;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;
     std::set<std::string> m_loggedFormats;
     std::mutex m_mutex;
+    std::mutex m_vtableMutex;
+    std::unordered_map<void *, std::vector<void *>> m_deviceVtables;
+    std::unordered_map<void *, std::vector<void *>> m_bufferVtables;
     std::atomic<bool> m_loggedUnlockOnce{false};
     std::atomic<bool> m_disableAfterFault{false};
     bool m_disableVtablePatch = false;

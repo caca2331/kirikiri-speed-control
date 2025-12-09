@@ -33,3 +33,5 @@
 2025-12-09 00:46: Added per-stage crash reporting (`stage=`) with opt-out for vectored handler (KRKR_DISABLE_VEH) and reordered init to detect earliest failing step; rebuilt/restaged x86/x64 dist.
 2025-12-09 00:57: Wrapped module-dump logging in its own try/catch so init continues even if EnumProcessModules or name fetch throws; rebuilt/restaged x86/x64 dist.
 2025-12-09 01:20: All env flags now only respect value \"1\"; added KRKR_SAFE_MODE (no hooks/patches), opt-in DirectSound via KRKR_ENABLE_DS, and documented the change; rebuilt/restaged x86/x64 dist.
+2025-12-09 02:20: Made DirectSound vtable patch optional (KRKR_DS_DISABLE_VTABLE) and switched to per-instance shadow vtables for CreateSoundBuffer/Unlock; updated README and rebuilt/restaged x86/x64 dist.
+2025-12-09 05:13: Throttled DirectSound Unlock debug spam, added DSP output-size diagnostics (pass-through detection), and rebuilt/restaged dual-arch binaries after SoundTouch receive loop fix.

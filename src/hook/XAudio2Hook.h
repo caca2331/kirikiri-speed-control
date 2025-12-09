@@ -57,7 +57,7 @@ private:
     void attachSharedSettings();
     void applySharedSettingsLocked(const SharedSettings &settings);
 
-    float m_userSpeed = 1.0f;
+    float m_userSpeed = 2.0f;
     bool m_lengthGateEnabled = true;
     float m_lengthGateSeconds = 30.0f;
     std::map<std::uintptr_t, VoiceContext> m_contexts;
