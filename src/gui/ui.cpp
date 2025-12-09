@@ -6,6 +6,7 @@
 
 #include "../common/Logging.h"
 #include "../hook/XAudio2Hook.h"
+#include "../common/SharedSettings.h"
 
 #include <Windows.h>
 #include <CommCtrl.h>
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <system_error>
 #include <string>
 #include <vector>
@@ -44,6 +46,8 @@ struct AppState {
     float lastValidDuration = 30.0f;
     bool lengthGateEnabled = true;
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
+    std::map<DWORD, HANDLE> sharedMaps;
+    std::map<DWORD, krkrspeed::SharedSettings *> sharedViews;
 };
 
 AppState g_state;
@@ -605,6 +609,67 @@ std::filesystem::path getProcessDirectory(DWORD pid) {
     return exePath.parent_path();
 }
 
+bool writeSharedSettingsForPid(DWORD pid, float speed, bool gateEnabled, float duration, std::wstring &error) {
+    using krkrspeed::SharedSettings;
+    const auto name = krkrspeed::BuildSharedSettingsName(pid);
+
+    HANDLE mapping = nullptr;
+    auto it = g_state.sharedMaps.find(pid);
+    if (it != g_state.sharedMaps.end()) {
+        mapping = it->second;
+    } else {
+        mapping = OpenFileMappingW(FILE_MAP_WRITE, FALSE, name.c_str());
+        if (!mapping) {
+            mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedSettings),
+                                         name.c_str());
+        }
+        if (!mapping) {
+            error = L"Unable to create shared settings map (error " + std::to_wstring(GetLastError()) + L")";
+            return false;
+        }
+        g_state.sharedMaps[pid] = mapping;
+    }
+
+    SharedSettings *view = nullptr;
+    auto viewIt = g_state.sharedViews.find(pid);
+    if (viewIt != g_state.sharedViews.end()) {
+        view = viewIt->second;
+    }
+    if (!view) {
+        view = static_cast<SharedSettings *>(MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(SharedSettings)));
+        if (!view) {
+            error = L"MapViewOfFile failed for shared settings (error " + std::to_wstring(GetLastError()) + L")";
+            CloseHandle(mapping);
+            g_state.sharedMaps.erase(pid);
+            return false;
+        }
+        g_state.sharedViews[pid] = view;
+    }
+
+    SharedSettings settings;
+    settings.userSpeed = std::clamp(speed, 0.5f, 10.0f);
+    settings.lengthGateSeconds = std::clamp(duration, 0.1f, 600.0f);
+    settings.lengthGateEnabled = gateEnabled ? 1u : 0u;
+    settings.version = 1;
+    *view = settings;
+    return true;
+}
+
+void cleanupSharedMaps() {
+    for (auto &kv : g_state.sharedViews) {
+        if (kv.second) {
+            UnmapViewOfFile(kv.second);
+        }
+    }
+    for (auto &kv : g_state.sharedMaps) {
+        if (kv.second) {
+            CloseHandle(kv.second);
+        }
+    }
+    g_state.sharedViews.clear();
+    g_state.sharedMaps.clear();
+}
+
 void handleApply(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, kProcessComboId);
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
@@ -644,6 +709,12 @@ void handleApply(HWND hwnd) {
                            L". Build/run the " + describeArch(targetArch) +
                            L" version of krkr_speed_hook.dll + KrkrSpeedController.";
         setStatus(statusLabel, msg);
+        return;
+    }
+
+    std::wstring sharedErr;
+    if (!writeSharedSettingsForPid(proc.pid, speed, gateChecked != FALSE, duration, sharedErr)) {
+        setStatus(statusLabel, sharedErr);
         return;
     }
 
@@ -792,6 +863,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     case WM_DESTROY:
         KRKR_LOG_INFO("KrkrSpeedController window destroyed, exiting.");
+        cleanupSharedMaps();
         PostQuitMessage(0);
         break;
     }

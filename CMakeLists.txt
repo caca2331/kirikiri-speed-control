@@ -68,9 +68,11 @@ if(WIN32)
     add_library(krkr_hook_core STATIC
         src/hook/XAudio2Hook.cpp
         src/hook/DirectSoundHook.cpp
+        src/hook/WaveOutHook.cpp
         src/hook/HookUtils.cpp
+        src/hook/ModuleScan.cpp
     )
-    target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound xaudio2)
+    target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound xaudio2 dxguid winmm)
     target_include_directories(krkr_hook_core PUBLIC src)
 
     add_library(krkr_speed_hook SHARED
