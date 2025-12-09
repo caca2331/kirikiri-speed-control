@@ -1,6 +1,6 @@
 ## General rules
-- Read Agents.md (this file), guide.md, README.md, tasks.md
-Agents.md defines the overall agent behavior.
+- Read AGENTS.md (this file), guide.md, README.md, tasks.md
+AGENTS.md defines the overall agent behavior.
 guide.md has the goal of the project.
 README.md is purposed for instucting the users.
 tasks.md has the additional instructions for the current tasks, this can be updated frequently, and should be re-read every time.

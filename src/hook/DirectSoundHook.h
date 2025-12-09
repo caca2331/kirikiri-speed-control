@@ -61,10 +61,16 @@ private:
         std::uint16_t bitsPerSample = 16;
         bool isPcm16 = true;
         std::uint16_t formatTag = WAVE_FORMAT_PCM;
+        std::uint32_t baseFrequency = 0;
+        std::uint32_t bufferBytes = 0;
+        std::uint32_t blockAlign = 0;
+        bool isLikelyBgm = false;
         bool loggedFormat = false;
         std::unique_ptr<DspPipeline> dsp;
         std::uint64_t unlockCount = 0;
         std::uint64_t lastLogCount = 0;
+        std::uint64_t processedFrames = 0;
+        std::uint64_t loopBytesAccum = 0;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;
     std::set<std::string> m_loggedFormats;
@@ -76,6 +82,8 @@ private:
     std::atomic<bool> m_disableAfterFault{false};
     bool m_disableVtablePatch = false;
     bool m_logOnly = false;
+    float m_bgmSecondsGate = 15.0f;
+    bool m_loopDetect = true;
 };
 
 } // namespace krkrspeed

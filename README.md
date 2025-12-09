@@ -92,7 +92,7 @@ ctest --test-dir build -V
 - Implement voice classification heuristics and IPC so the controller UI can drive live speed changes inside injected games.
 
 ## For AI Agents
-- also read guide.md and Agents.md
+- read AGENTS.md first
 
 ---
 

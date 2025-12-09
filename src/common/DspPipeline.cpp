@@ -33,13 +33,15 @@ DspPipeline::DspPipeline(std::uint32_t sampleRate, std::uint32_t channels, const
 
 DspPipeline::~DspPipeline() = default;
 
-std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::size_t bytes, float speedRatio) {
+std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::size_t bytes, float speedRatio,
+                                              DspMode mode) {
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     if (bytes == 0 || m_channels == 0) {
         return {};
     }
 
     const float tempo = std::max(0.01f, speedRatio);
+    const float pitch = std::max(0.01f, speedRatio);
     const std::size_t sampleCount = bytes / sizeof(std::int16_t);
     const std::size_t frameCount = sampleCount / m_channels;
     if (frameCount == 0) {
@@ -63,7 +65,15 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
         std::memcpy(input.data(), pcm, sampleCount * sizeof(std::int16_t));
     }
 
-    m_impl->touch.setTempo(tempo);
+    if (mode == DspMode::Tempo) {
+        m_impl->touch.setTempo(tempo);
+        m_impl->touch.setRate(1.0f);
+        m_impl->touch.setPitch(1.0f);
+    } else { // Pitch mode
+        m_impl->touch.setTempo(1.0f);
+        m_impl->touch.setRate(1.0f);
+        m_impl->touch.setPitch(pitch);
+    }
     m_impl->touch.putSamples(input.data(), frameCount);
 
     std::vector<std::uint8_t> output;
@@ -90,6 +100,36 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
         }
         if (output.size() >= bytes) break; // collected at least input length
     }
+
+    // If SoundTouch produced nothing (common on the first small chunk), fall back to a lightweight resample
+    // so the first playback is also sped up instead of passthrough.
+    if (output.empty()) {
+        auto naiveResample = [&](float ratio) {
+            const double inv = 1.0 / ratio;
+            const std::size_t outputSamples = static_cast<std::size_t>(sampleCount * inv);
+            std::vector<std::uint8_t> outBytes(outputSamples * sizeof(std::int16_t));
+            const auto *input = reinterpret_cast<const std::int16_t *>(data);
+            auto *out = reinterpret_cast<std::int16_t *>(outBytes.data());
+            for (std::size_t i = 0; i < outputSamples; ++i) {
+                const double srcIndex = i * ratio;
+                const std::size_t idx = static_cast<std::size_t>(srcIndex);
+                const std::size_t next = std::min<std::size_t>(idx + 1, sampleCount - 1);
+                const double frac = srcIndex - idx;
+                const std::int16_t a = input[idx];
+                const std::int16_t b = input[next];
+                out[i] = static_cast<std::int16_t>(a + (b - a) * frac);
+            }
+            return outBytes;
+        };
+        if (mode == DspMode::Tempo && std::abs(speedRatio - 1.0f) >= 0.01f) {
+            return naiveResample(speedRatio);
+        }
+        // Pitch-only fallback: leave as-is to avoid artifacts.
+        if (mode == DspMode::Pitch) {
+            return std::vector<std::uint8_t>(data, data + bytes);
+        }
+    }
+
     return output;
 #else
     // Fallback path: perform naive resampling to approximate tempo without pitch preservation.
