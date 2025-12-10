@@ -47,6 +47,8 @@ void DirectSoundHook::initialize() {
         return;
     }
     m_bgmSecondsGate = envFloat(L"KRKR_DS_BGM_SECS", 15.0f);
+    m_disableBgm = envFlagOn(L"KRKR_DS_DISABLE_BGM");
+    m_forceApply = envFlagOn(L"KRKR_DS_FORCE");
     // Loop-based BGM detection enabled by default; disable with KRKR_DS_DISABLE_LOOP=1
     m_loopDetect = !envFlagOff(L"KRKR_DS_DISABLE_LOOP");
     m_disableVtablePatch = envFlagOn(L"KRKR_DS_DISABLE_VTABLE");
@@ -235,6 +237,7 @@ HRESULT WINAPI DirectSoundHook::CreateSoundBufferHook(IDirectSound8 *self, LPDIR
     info.baseFrequency = fmt->nSamplesPerSec;
     info.bufferBytes = pcDSBufferDesc->dwBufferBytes;
     info.blockAlign = blockAlign;
+    info.approxSeconds = approxSeconds;
     info.isLikelyBgm = likelyBgm;
     info.isPcm16 = isPcm16;
     DspConfig cfg{};
@@ -332,7 +335,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
     }
 
-    {
+    for (int attempt = 0; attempt < 2; ++attempt) {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_buffers.find(reinterpret_cast<std::uintptr_t>(self));
         if (it != m_buffers.end() && it->second.dsp) {
@@ -359,21 +362,50 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 static_cast<float>(frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
             const float totalSec =
                 static_cast<float>(info.processedFrames + frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
+            const bool tooShort = durationSec < 0.5f; // skip tempo on tiny chunks to avoid choppy loops
             const bool shouldLog = info.unlockCount <= 5 || (info.unlockCount % 50 == 0);
-            // Loop-based BGM detection: if a buffer cycles through its own size multiple times, mark it as BGM.
-            if (m_loopDetect && !info.isLikelyBgm && info.bufferBytes > 0) {
+            // Loop-based BGM detection: only for large/looping buffers, skip small voice buffers.
+            const float loopDetectThreshold = std::max<float>(2.0f, m_bgmSecondsGate * 0.25f);
+            if (m_loopDetect && !m_disableBgm && !info.isLikelyBgm && info.bufferBytes > 0 &&
+                info.approxSeconds >= loopDetectThreshold) {
                 info.loopBytesAccum += combined.size();
-                if (info.loopBytesAccum >= static_cast<std::uint64_t>(info.bufferBytes) * 3ULL / 2ULL &&
-                    info.unlockCount >= 8) {
+                const bool oneLoop = info.loopBytesAccum >= static_cast<std::uint64_t>(info.bufferBytes);
+                const bool twoLoops = info.loopBytesAccum >= static_cast<std::uint64_t>(info.bufferBytes) * 2ULL;
+                if ((oneLoop && info.unlockCount >= 4) || (twoLoops && totalSec >= 2.0f)) {
+                    info.isLikelyBgm = true;
+                    if (shouldLog) {
+                        KRKR_LOG_INFO("DS buffer marked BGM via loop detect early buf=" +
+                                      std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                      " totalSec=" + std::to_string(totalSec) +
+                                      " loopsBytes=" + std::to_string(info.loopBytesAccum) + "/" +
+                                      std::to_string(info.bufferBytes));
+                    }
+                } else if (totalSec >= m_bgmSecondsGate && twoLoops && info.unlockCount >= 12) {
                     info.isLikelyBgm = true;
                     if (shouldLog) {
                         KRKR_LOG_INFO("DS buffer marked BGM via loop detection buf=" +
-                                      std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                                      std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                      " totalSec=" + std::to_string(totalSec) +
+                                      " loopsBytes=" + std::to_string(info.loopBytesAccum) + "/" +
+                                      std::to_string(info.bufferBytes * 2ULL));
+                    }
+                }
+            } else if (m_loopDetect && !m_disableBgm && !info.isLikelyBgm) {
+                // Streaming/rolling small buffers: early mark if they churn rapidly.
+                if ((info.unlockCount >= 8 && totalSec >= 3.0f && info.approxSeconds <= 1.5f) ||
+                    (totalSec >= 4.0f && info.unlockCount >= 12) ||
+                    (totalSec >= m_bgmSecondsGate && info.unlockCount >= 20)) {
+                    info.isLikelyBgm = true;
+                    if (shouldLog) {
+                        KRKR_LOG_INFO("DS buffer marked BGM via duration buf=" +
+                                      std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                      " totalSec=" + std::to_string(totalSec) +
+                                      " unlocks=" + std::to_string(info.unlockCount));
                     }
                 }
             }
-            const bool isBgm = info.isLikelyBgm;
-            const bool doDsp = !disableDsp && !isBgm && (!gate || totalSec <= gateSeconds);
+            const bool isBgm = info.isLikelyBgm && !m_disableBgm;
+            const bool doDsp = !disableDsp && !tooShort && (!isBgm || m_forceApply) && (!gate || totalSec <= gateSeconds);
             if (shouldLog) {
                 KRKR_LOG_DEBUG("DS Unlock: buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
                                " bytes=" + std::to_string(combined.size()) +
@@ -382,6 +414,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                " dur=" + std::to_string(durationSec) +
                                " total=" + std::to_string(totalSec) +
                                " bgm=" + (isBgm ? "1" : "0") +
+                               " short=" + (tooShort ? "1" : "0") +
                                " apply=" + (doDsp ? "1" : "0") +
                                " speed=" + std::to_string(userSpeed));
             }
@@ -437,8 +470,9 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 }
             }
             info.processedFrames += frames;
+            break; // processed successfully
         } else {
-            // Unknown buffer: try to discover format and start tracking.
+            // Unknown buffer: try to discover format and start tracking, then loop to process.
             WAVEFORMATEX wfx{};
             DWORD cb = 0;
             if (SUCCEEDED(self->GetFormat(nullptr, 0, &cb)) && cb >= sizeof(WAVEFORMATEX)) {
@@ -460,20 +494,18 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                         bytes = caps.dwBufferBytes;
                     }
                     info.bufferBytes = bytes;
-                const std::uint32_t blockAlign =
-                    fx->nBlockAlign ? fx->nBlockAlign : (fx->nChannels * fx->wBitsPerSample / 8);
-                if (blockAlign > 0 && fx->nSamplesPerSec > 0 && bytes > 0) {
-                    const float approxSeconds = static_cast<float>(bytes) /
-                                                static_cast<float>(blockAlign * fx->nSamplesPerSec);
-                    info.isLikelyBgm = approxSeconds >= m_bgmSecondsGate;
-                }
-                // Start loop accumulation at current chunk so first detection works even if unlock happened before hook.
-                info.loopBytesAccum = combined.size();
-                info.isPcm16 = (fx->wFormatTag == WAVE_FORMAT_PCM && fx->wBitsPerSample == 16);
-                info.loggedFormat = false;
-                DspConfig cfg{};
-                info.dsp = std::make_unique<DspPipeline>(info.sampleRate, info.channels, cfg);
-                m_buffers[reinterpret_cast<std::uintptr_t>(self)] = std::move(info);
+                    if (info.blockAlign > 0 && fx->nSamplesPerSec > 0 && bytes > 0) {
+                        const float approxSeconds = static_cast<float>(bytes) /
+                                                    static_cast<float>(info.blockAlign * fx->nSamplesPerSec);
+                        info.isLikelyBgm = approxSeconds >= m_bgmSecondsGate;
+                    }
+                    // Start loop accumulation at current chunk so first detection works even if unlock happened before hook.
+                    info.loopBytesAccum = combined.size();
+                    info.isPcm16 = (fx->wFormatTag == WAVE_FORMAT_PCM && fx->wBitsPerSample == 16);
+                    info.loggedFormat = false;
+                    DspConfig cfg{};
+                    info.dsp = std::make_unique<DspPipeline>(info.sampleRate, info.channels, cfg);
+                    m_buffers[reinterpret_cast<std::uintptr_t>(self)] = std::move(info);
                     KRKR_LOG_INFO("DS Unlock: tracked buffer=" +
                                   std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
                                   " fmt=" + std::to_string(fx->wFormatTag) +
@@ -490,21 +522,21 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 KRKR_LOG_WARN("DS Unlock: GetFormat size query failed for untracked buffer; passthrough");
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
-            // Re-run processing with newly tracked buffer on this same call.
             auto it2 = m_buffers.find(reinterpret_cast<std::uintptr_t>(self));
             if (it2 == m_buffers.end() || !it2->second.dsp) {
                 KRKR_LOG_WARN("DS Unlock: tracking failed; passthrough");
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
-            it = it2;
-            if (!it->second.isPcm16) {
+            if (!it2->second.isPcm16) {
                 KRKR_LOG_WARN("DirectSound buffer format not PCM16 (after late track); skipping DSP. fmt=" +
-                              std::to_string(it->second.formatTag) + " bits=" +
-                              std::to_string(it->second.bitsPerSample) + " ch=" +
-                              std::to_string(it->second.channels) + " sr=" +
-                              std::to_string(it->second.sampleRate));
+                              std::to_string(it2->second.formatTag) + " bits=" +
+                              std::to_string(it2->second.bitsPerSample) + " ch=" +
+                              std::to_string(it2->second.channels) + " sr=" +
+                              std::to_string(it2->second.sampleRate));
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
+            // Loop again to process with freshly tracked info.
+            continue;
         }
     }
 

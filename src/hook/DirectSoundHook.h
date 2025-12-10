@@ -64,6 +64,7 @@ private:
         std::uint32_t baseFrequency = 0;
         std::uint32_t bufferBytes = 0;
         std::uint32_t blockAlign = 0;
+        float approxSeconds = 0.0f;
         bool isLikelyBgm = false;
         bool loggedFormat = false;
         std::unique_ptr<DspPipeline> dsp;
@@ -82,6 +83,8 @@ private:
     std::atomic<bool> m_disableAfterFault{false};
     bool m_disableVtablePatch = false;
     bool m_logOnly = false;
+    bool m_disableBgm = false;
+    bool m_forceApply = false;
     float m_bgmSecondsGate = 15.0f;
     bool m_loopDetect = true;
 };

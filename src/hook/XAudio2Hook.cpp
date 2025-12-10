@@ -253,7 +253,8 @@ void XAudio2Hook::applySharedSettingsLocked(const SharedSettings &settings) {
 
 void XAudio2Hook::pollSharedSettings() {
     if (!m_sharedView) {
-        return;
+        attachSharedSettings();
+        if (!m_sharedView) return;
     }
     SharedSettings snapshot = *m_sharedView;
     std::lock_guard<std::mutex> lock(m_mutex);

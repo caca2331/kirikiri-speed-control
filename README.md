@@ -68,6 +68,9 @@ ctest --test-dir build -V
   DirectSound formats without patching, `KRKR_SKIP_DS=1` / `KRKR_SKIP_WAVEOUT=1` disable individual hooks, `KRKR_DS_PASSTHROUGH=1`
   / `KRKR_WAVEOUT_PASSTHROUGH=1` keep hooks but bypass DSP, `KRKR_DISABLE_DSP=1` disables DSP globally, and `KRKR_LOG_DIR=<path>`
   forces log output next to the binaries (the controller also drops a `%TEMP%\\krkr_log_dir.txt` hint automatically).
+- DirectSound BGM/loop handling: set `KRKR_DS_DISABLE_BGM=1` to ignore BGM detection entirely; set `KRKR_DS_FORCE=1` to
+  apply DSP even to buffers marked as BGM. Loop-based BGM marking now requires ≥2 full buffer loops *and* total playback
+  time beyond `KRKR_DS_BGM_SECS` (default 15s) to avoid misclassifying short voice buffers.
 - DirectSound hooks are now opt-in: set `KRKR_ENABLE_DS=1` to activate DS interception; otherwise the DS hook stays disabled.
   `KRKR_DS_DISABLE_VTABLE=1` skips all DirectSound vtable patching (safest); leave it unset to use per-instance shadow
   vtables (no writes into dsound.dll). `KRKR_DS_LOG_ONLY=1` keeps DS log-only (no Unlock processing). Processing remains
@@ -161,6 +164,8 @@ ctest --test-dir build -V
 - 调试/可选开关（在启动控制器或游戏前设置环境变量）：`KRKR_DS_LOG_ONLY=1`仅记录DirectSound格式不做Patch，`KRKR_SKIP_DS=1` /
   `KRKR_SKIP_WAVEOUT=1`关闭单独Hook，`KRKR_DS_PASSTHROUGH=1` / `KRKR_WAVEOUT_PASSTHROUGH=1`保留Hook但直通DSP，
   `KRKR_DISABLE_DSP=1`全局关闭DSP，`KRKR_LOG_DIR=<路径>`强制日志输出到指定目录（控制器也会自动在`%TEMP%\\krkr_log_dir.txt`写入提示文件）。
+- DirectSound BGM/循环处理：`KRKR_DS_DISABLE_BGM=1`可完全关闭BGM检测；`KRKR_DS_FORCE=1`即使被标记为BGM也强制套用DSP。
+  循环判定现在需要至少2次完整缓冲循环且总播放时长超过`KRKR_DS_BGM_SECS`（默认15秒），以避免把短语音误判为BGM。
 - DirectSound 处理仅对PCM16的非主缓冲生效；主缓冲及非PCM格式保持原样，若检测到缓冲指针不安全则自动退回直通以避免崩溃。
 - 控制器会将当前倍速与长度门限写入目标进程专用的共享内存块（`Local\\KrkrSpeedSettings_<pid>`），被注入的DLL会轮询读取，确保界面滑条的调整在注入后立即生效。
 - `KrkrSpeedController.exe` 现为Win32界面：刷新进程列表（仅显示当前会话且有可见窗口的进程）、选择目标、输入0.5–10倍

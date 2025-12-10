@@ -35,3 +35,9 @@
 2025-12-09 01:20: All env flags now only respect value \"1\"; added KRKR_SAFE_MODE (no hooks/patches), opt-in DirectSound via KRKR_ENABLE_DS, and documented the change; rebuilt/restaged x86/x64 dist.
 2025-12-09 02:20: Made DirectSound vtable patch optional (KRKR_DS_DISABLE_VTABLE) and switched to per-instance shadow vtables for CreateSoundBuffer/Unlock; updated README and rebuilt/restaged x86/x64 dist.
 2025-12-09 05:13: Throttled DirectSound Unlock debug spam, added DSP output-size diagnostics (pass-through detection), and rebuilt/restaged dual-arch binaries after SoundTouch receive loop fix.
+2025-12-10 00:40: Tightened DirectSound BGM loop detection (needs >=2 loops and >=BGM_SECS playback), added env toggles `KRKR_DS_DISABLE_BGM`/`KRKR_DS_FORCE`, and copied rebuilt x86 Release binaries to dist/x86 for testing with KRKR_ENABLE_DS=1.
+2025-12-10 01:05: Fixed DirectSound first-unlock passthrough by reprocessing newly tracked buffers in the same call (no more initial 1x), rebuilt x86 Release and restaged dist/x86.
+2025-12-10 01:25: Made shared settings attach lazy (DirectSound-only runs now pick up GUI speed changes) and accelerated BGM loop detection (mark after ~1 loop/4 unlocks to avoid early zig-zag), rebuilt x86 Release and restaged dist/x86.
+2025-12-10 01:45: Added duration-based BGM marking for small streaming buffers (>=BGM_SECS total, many unlocks) so BGM stops zig-zagging even when buffer size is small; rebuilt and restaged x86 binaries.
+2025-12-10 02:05: Further sped up BGM detection: lowered loop threshold (gate*0.25, min 2s) and added early duration-based tagging for fast-churning small buffers (>=3–4s), rebuilt and restaged x86.
+2025-12-10 02:20: Logged that BGM buffers in the game HaremKingdom were ~0.10s (17640 bytes at 44.1kHz stereo) with an initial 0.40s chunk; added a 0.5s minimum chunk length check to skip DSP on tiny buffers (commented in code), rebuilt/restaged x86.
