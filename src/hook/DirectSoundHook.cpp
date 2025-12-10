@@ -288,7 +288,11 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         DWORD n = GetEnvironmentVariableW(L"KRKR_DISABLE_DSP", buf, static_cast<DWORD>(std::size(buf)));
         return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
     }();
-    // WSOLA toggle removed for now; only freq+pitch path is used.
+    static bool useWsola = []{
+        wchar_t buf[8] = {};
+        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_WSOLA", buf, static_cast<DWORD>(std::size(buf)));
+        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
+    }();
     static bool disableGate = []{
         wchar_t buf[8] = {};
         DWORD n = GetEnvironmentVariableW(L"KRKR_DS_DISABLE_GATE", buf, static_cast<DWORD>(std::size(buf)));
@@ -428,38 +432,24 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                " apply=" + (doDsp ? "1" : "0") +
                                " speed=" + std::to_string(userSpeed));
             }
-            auto fillRepeated = [](std::vector<std::uint8_t> &out, std::size_t targetBytes) {
-                if (out.empty() || targetBytes <= out.size()) return;
-                std::vector<std::uint8_t> filled(targetBytes);
-                const std::size_t n = out.size();
-                for (std::size_t i = 0; i < targetBytes; ++i) {
-                    filled[i] = out[i % n];
-                }
-                out.swap(filled);
+            auto padSilence = [](std::vector<std::uint8_t> &out, std::size_t targetBytes) {
+                if (out.size() >= targetBytes) return;
+                std::size_t old = out.size();
+                out.resize(targetBytes);
+                std::fill(out.begin() + old, out.end(), 0);
             };
 
             if (doDsp) {
-                // Cap SetFrequency so target Hz never exceeds DSBFREQUENCY_MAX; use applied speed for pitch restore.
-                const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
-                const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
-                double clampedD = scaled;
-                if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
-                if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
-                const DWORD clamped = static_cast<DWORD>(clampedD);
-                self->SetFrequency(clamped);
-                const float appliedSpeed =
-                    base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
-                float denom = appliedSpeed;
-                if (denom < 0.01f) denom = 0.01f;
-                const float pitchDown = 1.0f / denom;
-                auto out = info.dsp->process(combined.data(), combined.size(), pitchDown, DspMode::Pitch);
-                if (out.empty()) {
-                    if (shouldLog) {
-                        KRKR_LOG_DEBUG("DS pitch-compensate produced 0 bytes; fallback passthrough buf=" +
-                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                auto processTempo = [&]() {
+                    auto out = info.dsp->process(combined.data(), combined.size(), userSpeed, DspMode::Tempo);
+                    if (out.empty()) {
+                        if (shouldLog) {
+                            KRKR_LOG_DEBUG("DS DSP (WSOLA) produced 0 bytes; passthrough for buf=" +
+                                           std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                        }
+                        return;
                     }
-                } else {
-                    fillRepeated(out, combined.size());
+                    padSilence(out, combined.size());
                     if (out.size() >= combined.size()) {
                         std::copy_n(out.data(), combined.size(), combined.begin());
                     } else {
@@ -467,10 +457,48 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                         std::fill(combined.begin() + out.size(), combined.end(), 0);
                     }
                     if (shouldLog) {
-                        KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
-                                       " target=" + std::to_string(clamped) +
-                                       " appliedSpeed=" + std::to_string(appliedSpeed) +
-                                       " pitchCompOut=" + std::to_string(out.size()));
+                        KRKR_LOG_DEBUG("DS WSOLA applied: in=" + std::to_string(combined.size()) +
+                                       " out=" + std::to_string(out.size()) +
+                                       " buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                    }
+                };
+
+                if (useWsola) {
+                    processTempo();
+                } else {
+                    // Cap SetFrequency so target Hz never exceeds DSBFREQUENCY_MAX; use applied speed for pitch restore.
+                    const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
+                    const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
+                    double clampedD = scaled;
+                    if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
+                    if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
+                    const DWORD clamped = static_cast<DWORD>(clampedD);
+                    self->SetFrequency(clamped);
+                    const float appliedSpeed =
+                        base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
+                    float denom = appliedSpeed;
+                    if (denom < 0.01f) denom = 0.01f;
+                    const float pitchDown = 1.0f / denom;
+                    auto out = info.dsp->process(combined.data(), combined.size(), pitchDown, DspMode::Pitch);
+                    if (out.empty()) {
+                        if (shouldLog) {
+                            KRKR_LOG_DEBUG("DS pitch-compensate produced 0 bytes; fallback passthrough buf=" +
+                                           std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                        }
+                    } else {
+                    padSilence(out, combined.size());
+                    if (out.size() >= combined.size()) {
+                        std::copy_n(out.data(), combined.size(), combined.begin());
+                    } else {
+                        std::copy(out.begin(), out.end(), combined.begin());
+                        std::fill(combined.begin() + out.size(), combined.end(), 0);
+                        }
+                        if (shouldLog) {
+                            KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
+                                           " target=" + std::to_string(clamped) +
+                                           " appliedSpeed=" + std::to_string(appliedSpeed) +
+                                           " pitchCompOut=" + std::to_string(out.size()));
+                        }
                     }
                 }
             }

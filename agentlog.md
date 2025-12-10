@@ -53,3 +53,5 @@
 2025-12-10 04:45: Documented the >2x voice repetition limitation in README (EN/ZH); advise users to stay at <=2x if they hear repeats.
 2025-12-10 05:05: Removed fallback tempo path; added env KRKR_DS_WSOLA=1 to force WSOLA (tempo) instead of freq+pitch; default now stays on freq+pitch only. Rebuilt/restaged x86.
 2025-12-10 05:20: Added dynamic DS frequency cap: appliedSpeed = min(userSpeed, DSBFREQUENCY_MAX/baseRate); pitch restore now uses applied speed so 3x requests on 44.1kHz no longer mismatch after clamp. Removed WSOLA toggle for now. Rebuilt/restaged x86.
+2025-12-10 05:45: Added WSOLA env switch (KRKR_DS_WSOLA=1) to route DirectSound through tempo/WSOLA; default remains freq+pitch with SetFrequency capped to 100kHz and applied speed used for pitch restore. Rebuilt/restaged x86.
+2025-12-10 06:05: Gap fill changed to silence padding (no repeat tiling); rebuilt/restaged x86.
