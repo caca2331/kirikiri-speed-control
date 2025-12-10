@@ -1,6 +1,5 @@
 #include "XAudio2Hook.h"
 #include "DirectSoundHook.h"
-#include "WaveOutHook.h"
 #include "HookUtils.h"
 #include "../common/Logging.h"
 #include <thread>
@@ -72,7 +71,6 @@ namespace {
         if (!module || !nameAnsi) return;
         auto &xa = krkrspeed::XAudio2Hook::instance();
         auto &ds = krkrspeed::DirectSoundHook::instance();
-        auto &wo = krkrspeed::WaveOutHook::instance();
         if (!xa.hasCreateHook()) {
             FARPROC fn = GetProcAddress(module, "XAudio2Create");
             if (fn) {
@@ -92,12 +90,7 @@ namespace {
                 KRKR_LOG_INFO(std::string("Captured DirectSoundCreate from newly loaded module: ") + nameAnsi);
             }
         }
-        if (auto fn = GetProcAddress(module, "waveOutOpen")) {
-            wo.setOriginalOpen(reinterpret_cast<void *>(fn));
-        }
-        if (auto fn = GetProcAddress(module, "waveOutWrite")) {
-            wo.setOriginalWrite(reinterpret_cast<void *>(fn));
-        }
+        // waveOut support removed
     }
 
     FARPROC WINAPI GetProcAddressHook(HMODULE module, LPCSTR procName) {
@@ -193,9 +186,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                     return;
                 }
 
-                // Allow skipping XAudio2/DS/waveOut via environment for diagnostics.
+                // Allow skipping XAudio2/DS via environment for diagnostics.
                 const bool skipXa = EnvFlagOn(L"KRKR_SKIP_XAUDIO2");
-                const bool skipWaveOut = EnvFlagOn(L"KRKR_SKIP_WAVEOUT");
                 const bool skipImports = EnvFlagOn(L"KRKR_SKIP_IMPORT_PATCHES");
 
                 if (skipImports) {
@@ -304,17 +296,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                     KRKR_LOG_ERROR("Init: DirectSoundHook::initialize threw an exception");
                 }
 
-                stage = "waveout init";
-                if (!skipWaveOut) {
-                    KRKR_LOG_INFO("Init: starting WaveOutHook::initialize");
-                    try {
-                        krkrspeed::WaveOutHook::instance().initialize();
-                    } catch (...) {
-                        KRKR_LOG_ERROR("Init: WaveOutHook::initialize threw an exception");
-                    }
-                } else {
-                    KRKR_LOG_INFO("KRKR_SKIP_WAVEOUT set; skipping waveOut hooks");
-                }
 
                 stage = "ldr notify";
                 // Optionally skip LdrRegisterDllNotification if requested (troubleshooting).

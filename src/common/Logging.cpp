@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -201,6 +202,23 @@ void writeLine(LoggerState &stateRef, LogLevel level, const std::string &line) {
 } // namespace
 
 void logMessage(LogLevel level, const std::string &message) {
+    static bool loggingChecked = false;
+    static bool loggingEnabled = false;
+    if (!loggingChecked) {
+#ifdef _WIN32
+        wchar_t buf[8] = {};
+        DWORD n = GetEnvironmentVariableW(L"KRKR_ENABLE_LOG", buf, static_cast<DWORD>(std::size(buf)));
+        loggingEnabled = (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
+#else
+        const char *env = std::getenv("KRKR_ENABLE_LOG");
+        loggingEnabled = env && env[0] == '1';
+#endif
+        loggingChecked = true;
+    }
+    if (!loggingEnabled) {
+        return;
+    }
+
     auto &s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
     ensureOpen(s);

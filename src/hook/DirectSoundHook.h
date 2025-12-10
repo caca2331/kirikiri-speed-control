@@ -23,7 +23,6 @@ public:
     void scanLoadedModules();
     void bootstrapVtable();
     bool hasCreateHook() const { return m_origCreate8 != nullptr; }
-    bool isLogOnly() const { return m_logOnly; }
 
     void patchDeviceVtable(IDirectSound8 *ds8);
     void patchBufferVtable(IDirectSoundBuffer *buf);
@@ -81,8 +80,7 @@ private:
     std::unordered_map<void *, std::vector<void *>> m_bufferVtables;
     std::atomic<bool> m_loggedUnlockOnce{false};
     std::atomic<bool> m_disableAfterFault{false};
-    bool m_disableVtablePatch = false;
-    bool m_logOnly = false;
+    bool m_disableVtablePatch = false; // retained for safety; no env toggle now
     bool m_disableBgm = false;
     bool m_forceApply = false;
     float m_bgmSecondsGate = 15.0f;

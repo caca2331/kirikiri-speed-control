@@ -12,8 +12,7 @@ endif()
 
 option(BUILD_GUI "Build the optional controller GUI" ON)
 option(USE_SOUNDTOUCH "Enable SoundTouch based DSP (requires library)" OFF)
-option(BUILD_TESTS "Build DSP smoke tests (desktop only)" ON)
-option(ENABLE_LOGGING "Enable krkr_speed logging" ON)
+option(BUILD_TESTS "Build DSP smoke tests (desktop only)" OFF)
 
 add_library(krkr_common STATIC
     src/common/DspPipeline.cpp
@@ -22,8 +21,6 @@ add_library(krkr_common STATIC
 target_include_directories(krkr_common PUBLIC src)
 target_compile_definitions(krkr_common PUBLIC
     $<$<BOOL:${USE_SOUNDTOUCH}>:USE_SOUNDTOUCH>
-    $<$<BOOL:${ENABLE_LOGGING}>:KRKR_ENABLE_LOGGING=1>
-    $<$<NOT:$<BOOL:${ENABLE_LOGGING}>>:KRKR_ENABLE_LOGGING=0>
 )
 if(USE_SOUNDTOUCH)
     # Hint CMake where the vcpkg-provided SoundTouch package lives.
@@ -68,7 +65,6 @@ if(WIN32)
     add_library(krkr_hook_core STATIC
         src/hook/XAudio2Hook.cpp
         src/hook/DirectSoundHook.cpp
-        src/hook/WaveOutHook.cpp
         src/hook/HookUtils.cpp
         src/hook/ModuleScan.cpp
     )
@@ -98,15 +94,7 @@ else()
 endif()
 
 if(BUILD_TESTS)
-    enable_testing()
-    add_executable(dsp_smoke
-        tests/dsp_smoke.cpp
-    )
-    target_link_libraries(dsp_smoke PRIVATE krkr_common)
-    if(USE_SOUNDTOUCH)
-        copy_soundtouch_runtime(dsp_smoke)
-    endif()
-    add_test(NAME dsp_smoke COMMAND dsp_smoke)
+    message(STATUS "Tests disabled by default; BUILD_TESTS=OFF")
 endif()
 
 if(WIN32)

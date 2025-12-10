@@ -46,13 +46,9 @@ void DirectSoundHook::initialize() {
         KRKR_LOG_INFO("KRKR_SKIP_DS set; DirectSound hooks disabled");
         return;
     }
-    m_bgmSecondsGate = envFloat(L"KRKR_DS_BGM_SECS", 15.0f);
+    m_bgmSecondsGate = envFloat(L"KRKR_DS_BGM_SECS", 60.0f);
     m_disableBgm = envFlagOn(L"KRKR_DS_DISABLE_BGM");
     m_forceApply = envFlagOn(L"KRKR_DS_FORCE");
-    // Loop-based BGM detection enabled by default; disable with KRKR_DS_DISABLE_LOOP=1
-    m_loopDetect = !envFlagOff(L"KRKR_DS_DISABLE_LOOP");
-    m_disableVtablePatch = envFlagOn(L"KRKR_DS_DISABLE_VTABLE");
-    m_logOnly = envFlagOn(L"KRKR_DS_LOG_ONLY");
     KRKR_LOG_INFO("DirectSound hook initialization started");
     hookEntryPoints();
     scanLoadedModules();
@@ -194,8 +190,7 @@ HRESULT WINAPI DirectSoundHook::CreateSoundBufferHook(IDirectSound8 *self, LPDIR
                          " bytes=" + std::to_string(pcDSBufferDesc->dwBufferBytes) +
                          " flags=0x" + std::to_string(pcDSBufferDesc->dwFlags);
     KRKR_LOG_INFO("DS CreateSoundBuffer " + fmtKey + " buffer=" +
-                  std::to_string(reinterpret_cast<std::uintptr_t>(*ppDSBuffer)) +
-                  (hook.m_logOnly ? " [log-only]" : ""));
+                  std::to_string(reinterpret_cast<std::uintptr_t>(*ppDSBuffer)));
     const bool isPrimary = (pcDSBufferDesc->dwFlags & DSBCAPS_PRIMARYBUFFER) != 0;
     const bool isPcm16 = fmt->wFormatTag == WAVE_FORMAT_PCM && fmt->wBitsPerSample == 16;
     const std::uint32_t blockAlign = fmt->nBlockAlign ? fmt->nBlockAlign : (fmt->nChannels * fmt->wBitsPerSample / 8);
@@ -208,12 +203,8 @@ HRESULT WINAPI DirectSoundHook::CreateSoundBufferHook(IDirectSound8 *self, LPDIR
     {
         std::lock_guard<std::mutex> lock(hook.m_mutex);
         if (hook.m_loggedFormats.insert(fmtKey).second) {
-            KRKR_LOG_INFO("DS CreateSoundBuffer " + fmtKey + (hook.m_logOnly ? " [log-only]" : ""));
+            KRKR_LOG_INFO("DS CreateSoundBuffer " + fmtKey);
         }
-    }
-
-    if (hook.m_logOnly) {
-        return hr;
     }
 
     if (isPrimary) {
@@ -275,14 +266,6 @@ HRESULT WINAPI DirectSoundHook::UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pA
 
 HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
-    static bool passthrough = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_PASSTHROUGH", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-    }();
-    if (passthrough) {
-        return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
-    }
     static bool disableDsp = []{
         wchar_t buf[8] = {};
         DWORD n = GetEnvironmentVariableW(L"KRKR_DISABLE_DSP", buf, static_cast<DWORD>(std::size(buf)));
@@ -291,16 +274,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     static bool useWsola = []{
         wchar_t buf[8] = {};
         DWORD n = GetEnvironmentVariableW(L"KRKR_DS_WSOLA", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-    }();
-    static bool disableGate = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_DISABLE_GATE", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-    }();
-    static bool zeroOnUnlock = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_ZERO_ON_UNLOCK", buf, static_cast<DWORD>(std::size(buf)));
         return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
     }();
     if (!m_loggedUnlockOnce.exchange(true)) {
@@ -351,7 +324,7 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
             const float userSpeed = XAudio2Hook::instance().getUserSpeed();
-            const bool gate = !disableGate && XAudio2Hook::instance().isLengthGateEnabled();
+            const bool gate = XAudio2Hook::instance().isLengthGateEnabled();
             const float gateSeconds = XAudio2Hook::instance().lengthGateSeconds();
             auto &info = it->second;
             info.unlockCount++;
@@ -571,12 +544,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
             // Loop again to process with freshly tracked info.
             continue;
         }
-    }
-
-    // Optional: zero buffer to verify writeback path.
-    if (zeroOnUnlock) {
-        std::fill(combined.begin(), combined.end(), 0);
-        KRKR_LOG_INFO("DS Unlock: zeroed buffer per KRKR_DS_ZERO_ON_UNLOCK");
     }
 
     // Write combined buffer back into the two regions.

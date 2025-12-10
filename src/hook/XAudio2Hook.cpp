@@ -27,6 +27,15 @@ XAudio2Hook &XAudio2Hook::instance() {
 
 void XAudio2Hook::initialize() {
     g_self = this;
+    // Default gate: always on, 60s or overridden by env KRKR_DS_BGM_SECS for consistency.
+    auto envFloat = [](const wchar_t *name, float fallback) {
+        wchar_t buf[32] = {};
+        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+        if (n == 0 || n >= std::size(buf)) return fallback;
+        try { return std::stof(std::wstring(buf)); } catch (...) { return fallback; }
+    };
+    m_lengthGateEnabled = true;
+    m_lengthGateSeconds = envFloat(L"KRKR_DS_BGM_SECS", 60.0f);
     detectVersion();
     hookEntryPoints();
     ensureCreateFunction();

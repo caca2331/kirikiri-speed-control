@@ -31,8 +31,7 @@ constexpr int kRefreshButtonId = 1002;
 constexpr int kSpeedEditId = 1003;
 constexpr int kApplyButtonId = 1004;
 constexpr int kStatusLabelId = 1005;
-constexpr int kDurationEditId = 1006;
-constexpr int kDurationCheckboxId = 1007;
+constexpr int kLinkId = 1006;
 
 struct ProcessInfo {
     std::wstring name;
@@ -43,14 +42,14 @@ struct AppState {
     std::vector<ProcessInfo> processes;
     float currentSpeed = 2.0f;
     float lastValidSpeed = 2.0f;
-    float lastValidDuration = 30.0f;
-    bool lengthGateEnabled = true;
+    float gateSeconds = 60.0f;
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
     std::map<DWORD, HANDLE> sharedMaps;
     std::map<DWORD, krkrspeed::SharedSettings *> sharedViews;
 };
 
 AppState g_state;
+static HWND g_link = nullptr;
 
 enum class ProcessArch {
     Unknown,
@@ -290,29 +289,6 @@ float readSpeedFromEdit(HWND edit) {
     const float clamped = std::clamp(parsed, 0.5f, 10.0f);
     g_state.lastValidSpeed = clamped;
     return clamped;
-}
-
-float readDurationFromEdit(HWND edit) {
-    wchar_t buffer[32] = {};
-    GetWindowTextW(edit, buffer, static_cast<int>(std::size(buffer)));
-    wchar_t *end = nullptr;
-    float parsed = std::wcstof(buffer, &end);
-    if (end == buffer || !std::isfinite(parsed)) {
-        wchar_t normalized[32] = {};
-        swprintf_s(normalized, L"%.2f", g_state.lastValidDuration);
-        SetWindowTextW(edit, normalized);
-        return g_state.lastValidDuration;
-    }
-    // Allow reasonable range 0.1s - 600s.
-    if (parsed < 0.1f || parsed > 600.0f) {
-        wchar_t normalized[32] = {};
-        swprintf_s(normalized, L"%.2f", g_state.lastValidDuration);
-        SetWindowTextW(edit, normalized);
-        return g_state.lastValidDuration;
-    }
-
-    g_state.lastValidDuration = parsed;
-    return parsed;
 }
 
 void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes) {
@@ -674,18 +650,12 @@ void handleApply(HWND hwnd) {
     HWND combo = GetDlgItem(hwnd, kProcessComboId);
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
     HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
-    HWND editDuration = GetDlgItem(hwnd, kDurationEditId);
-    HWND durationCheckbox = GetDlgItem(hwnd, kDurationCheckboxId);
 
     const float speed = readSpeedFromEdit(editSpeed);
     g_state.currentSpeed = speed;
 
-    const BOOL gateChecked = SendMessageW(durationCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    const float duration = readDurationFromEdit(editDuration);
-    g_state.lengthGateEnabled = gateChecked != FALSE;
-
     krkrspeed::XAudio2Hook::instance().setUserSpeed(speed);
-    krkrspeed::XAudio2Hook::instance().configureLengthGate(g_state.lengthGateEnabled, duration);
+    krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
 
     const int index = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
     if (index < 0 || index >= static_cast<int>(g_state.processes.size())) {
@@ -713,7 +683,7 @@ void handleApply(HWND hwnd) {
     }
 
     std::wstring sharedErr;
-    if (!writeSharedSettingsForPid(proc.pid, speed, gateChecked != FALSE, duration, sharedErr)) {
+    if (!writeSharedSettingsForPid(proc.pid, speed, true, g_state.gateSeconds, sharedErr)) {
         setStatus(statusLabel, sharedErr);
         return;
     }
@@ -740,8 +710,8 @@ void handleApply(HWND hwnd) {
     std::wstring error;
     if (injectDllIntoProcess(proc.pid, dllPath, error)) {
         wchar_t message[160] = {};
-        swprintf_s(message, L"Injected into %s (PID %u) at %.2fx; gate %s @ %.2fs",
-                   proc.name.c_str(), proc.pid, speed, gateChecked ? L"on" : L"off", duration);
+        swprintf_s(message, L"Injected into %s (PID %u) at %.2fx; gate on @ %.2fs",
+                   proc.name.c_str(), proc.pid, speed, g_state.gateSeconds);
         setStatus(statusLabel, message);
     } else {
         std::wstring detail = L" [controller=" + describeArch(selfArch) + L", target=" + describeArch(targetArch) +
@@ -759,7 +729,6 @@ void layoutControls(HWND hwnd) {
     const int editWidth = 120;
     const int buttonWidth = 120;
     const int rowHeight = 28;
-    const int checkboxWidth = 200;
 
     int x = padding;
     int y = padding;
@@ -775,12 +744,12 @@ void layoutControls(HWND hwnd) {
                  SWP_NOZORDER);
 
     y += rowHeight;
-    SetWindowPos(GetDlgItem(hwnd, kDurationEditId), nullptr, x + labelWidth, y, editWidth, comboHeight, SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(hwnd, kDurationCheckboxId), nullptr, x + labelWidth + editWidth + padding, y, checkboxWidth, comboHeight,
-                 SWP_NOZORDER);
-
-    y += rowHeight;
     SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, comboHeight, SWP_NOZORDER);
+    y += rowHeight;
+
+    if (g_link) {
+        SetWindowPos(g_link, nullptr, x, y - 4, rc.right - padding * 2, comboHeight + 4, SWP_NOZORDER);
+    }
 }
 
 HWND createTooltip(HWND parent) {
@@ -823,19 +792,28 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND apply = CreateWindowExW(0, L"BUTTON", L"Hook + Apply", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyButtonId)), nullptr, nullptr);
 
-        CreateWindowExW(0, L"STATIC", L"Max voiced length (seconds)", WS_CHILD | WS_VISIBLE, 12, 68, 180, 20, hwnd, nullptr, nullptr, nullptr);
-        HWND durationEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"30.00",
-                                            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                            200, 66, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDurationEditId)), nullptr, nullptr);
-        HWND durationCheckbox = CreateWindowExW(0, L"BUTTON", L"Only speed-up if shorter than threshold",
-                                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                                0, 66, 240, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDurationCheckboxId)), nullptr, nullptr);
-        SendMessageW(durationCheckbox, BM_SETCHECK, BST_CHECKED, 0);
         krkrspeed::XAudio2Hook::instance().setUserSpeed(g_state.lastValidSpeed);
-        krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.lastValidDuration);
+        krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
 
         CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE,
                         12, 96, 400, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
+
+        const wchar_t *linkText = L"<a href=\"https://github.com/caca2331/kirikiri-speed-control\">GitHub: kirikiri-speed-control</a>";
+        g_link = CreateWindowExW(0, WC_LINK, linkText,
+                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                                 12, 124, 500, 24,
+                                 hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLinkId)), nullptr, nullptr);
+        if (!g_link) {
+            // Fallback for systems without SysLink (e.g., missing comctl32 v6 manifest).
+            const wchar_t *fallbackText = L"GitHub: https://github.com/caca2331/kirikiri-speed-control";
+            g_link = CreateWindowExW(0, L"STATIC", fallbackText,
+                                     WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                                     12, 124, 500, 20,
+                                     hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLinkId)), nullptr, nullptr);
+        }
+        if (g_link) {
+            SendMessageW(g_link, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        }
 
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
@@ -845,8 +823,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         addTooltip(tooltip, refresh, L"Refresh running processes (visible windows in this session)");
         addTooltip(tooltip, speedEdit, L"Target speed (0.5-10.0x, recommended 0.75-2.0x)");
         addTooltip(tooltip, apply, L"Inject DLL and apply speed + gating settings");
-        addTooltip(tooltip, durationEdit, L"Buffers shorter than this (seconds) will be time-stretched");
-        addTooltip(tooltip, durationCheckbox, L"Enable length-based gating; uncheck to process all audio");
         break;
     }
     case WM_SIZE:
@@ -858,6 +834,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId));
         } else if (id == kApplyButtonId && HIWORD(wParam) == BN_CLICKED) {
             handleApply(hwnd);
+        } else if (id == kLinkId && HIWORD(wParam) == STN_CLICKED) {
+            ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        break;
+    }
+    case WM_NOTIFY: {
+        auto *hdr = reinterpret_cast<NMHDR *>(lParam);
+        if (hdr && hdr->idFrom == kLinkId && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
+            ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
+            return 0;
         }
         break;
     }
@@ -876,7 +862,7 @@ int runController(HINSTANCE hInstance, int nCmdShow) {
     KRKR_LOG_INFO("KrkrSpeedController GUI starting");
     const wchar_t CLASS_NAME[] = L"KrkrSpeedControllerWindow";
 
-    INITCOMMONCONTROLSEX icc{sizeof(INITCOMMONCONTROLSEX), ICC_WIN95_CLASSES};
+    INITCOMMONCONTROLSEX icc{sizeof(INITCOMMONCONTROLSEX), ICC_WIN95_CLASSES | ICC_LINK_CLASS};
     InitCommonControlsEx(&icc);
 
     WNDCLASSW wc{};
