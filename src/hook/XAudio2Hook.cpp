@@ -374,6 +374,7 @@ void __stdcall XAudio2Hook::DestroyVoiceHook(IXAudio2Voice *voice) {
     {
         std::lock_guard<std::mutex> lock(hook.m_mutex);
         hook.m_contexts.erase(reinterpret_cast<std::uintptr_t>(voice));
+        hook.m_pipelines.erase(reinterpret_cast<std::uintptr_t>(voice));
     }
     if (hook.m_origDestroyVoice) {
         hook.m_origDestroyVoice(voice);
@@ -482,13 +483,12 @@ std::vector<std::uint8_t> XAudio2Hook::onSubmitBuffer(std::uintptr_t voiceKey, c
     }
 
     static DspConfig defaultConfig{};
-    static std::map<std::uintptr_t, std::unique_ptr<DspPipeline>> pipelines;
-    auto pipeline = pipelines.find(voiceKey);
-    if (pipeline == pipelines.end()) {
+    auto pipeline = m_pipelines.find(voiceKey);
+    if (pipeline == m_pipelines.end()) {
         const std::uint32_t sr = it->second.sampleRate > 0 ? it->second.sampleRate : 44100;
         const std::uint32_t ch = it->second.channels > 0 ? it->second.channels : 1;
         auto dsp = std::make_unique<DspPipeline>(sr, ch, defaultConfig);
-        pipeline = pipelines.emplace(voiceKey, std::move(dsp)).first;
+        pipeline = m_pipelines.emplace(voiceKey, std::move(dsp)).first;
         KRKR_LOG_DEBUG("Initialized DSP pipeline for voice key=" + std::to_string(voiceKey));
     }
     return pipeline->second->process(data, size, ratio);

@@ -264,6 +264,27 @@ HRESULT WINAPI DirectSoundHook::UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pA
     return UnlockHook(reinterpret_cast<IDirectSoundBuffer *>(self), pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
 }
 
+ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
+    auto &hook = DirectSoundHook::instance();
+    if (!hook.m_origRelease) {
+        return 0;
+    }
+    ULONG remaining = hook.m_origRelease(self);
+    if (remaining == 0) {
+        {
+            std::lock_guard<std::mutex> lock(hook.m_mutex);
+            hook.m_buffers.erase(reinterpret_cast<std::uintptr_t>(self));
+        }
+        {
+            std::lock_guard<std::mutex> lock(hook.m_vtableMutex);
+            hook.m_bufferVtables.erase(self);
+        }
+        KRKR_LOG_DEBUG("DS buffer released and metadata cleared buf=" +
+                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+    }
+    return remaining;
+}
+
 HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
     static bool disableDsp = []{
@@ -606,11 +627,15 @@ void DirectSoundHook::patchBufferVtable(IDirectSoundBuffer *buf) {
     constexpr size_t kCount = 32;
     std::vector<void *> shadow(kCount);
     for (size_t i = 0; i < kCount; ++i) shadow[i] = origVtbl[i];
+    if (!m_origRelease) {
+        m_origRelease = reinterpret_cast<PFN_Release>(origVtbl[2]);
+    }
     shadow[19] = reinterpret_cast<void *>(&DirectSoundHook::UnlockHook);
+    shadow[2] = reinterpret_cast<void *>(&DirectSoundHook::ReleaseHook);
 
     *reinterpret_cast<void ***>(buf) = shadow.data();
     m_bufferVtables[buf] = std::move(shadow);
-    KRKR_LOG_INFO("Applied shadow vtable for IDirectSoundBuffer instance (Unlock)");
+    KRKR_LOG_INFO("Applied shadow vtable for IDirectSoundBuffer instance (Release, Unlock)");
 }
 
 void DirectSoundHook::installGlobalUnlockHook() {

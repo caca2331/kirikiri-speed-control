@@ -4,6 +4,7 @@ build32/
 build.x64/
 build.x86/
 dist/
+*.zip
 draft.md
 guide.md
 agentlog.md

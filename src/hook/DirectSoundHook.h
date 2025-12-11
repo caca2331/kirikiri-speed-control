@@ -36,6 +36,7 @@ public:
                                      DWORD dwAudioBytes2);
     static HRESULT WINAPI UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2);
+    static ULONG __stdcall ReleaseHook(IDirectSoundBuffer *self);
 
     __declspec(noinline) HRESULT handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                               LPVOID pAudioPtr2, DWORD dwAudioBytes2);
@@ -48,11 +49,13 @@ private:
     using PFN_DirectSoundCreate = HRESULT(WINAPI *)(LPCGUID, LPDIRECTSOUND *, LPUNKNOWN);
     using PFN_CreateSoundBuffer = HRESULT(__stdcall *)(IDirectSound8 *, LPDIRECTSOUNDBUFFER *, LPCDSBUFFERDESC);
     using PFN_Unlock = HRESULT(__stdcall *)(IDirectSoundBuffer *, LPVOID, DWORD, LPVOID, DWORD);
+    using PFN_Release = ULONG(__stdcall *)(IDirectSoundBuffer *);
 
     PFN_DirectSoundCreate8 m_origCreate8 = nullptr;
     PFN_DirectSoundCreate m_origCreate = nullptr;
     PFN_CreateSoundBuffer m_origCreateBuffer = nullptr;
     PFN_Unlock m_origUnlock = nullptr;
+    PFN_Release m_origRelease = nullptr;
 
     struct BufferInfo {
         std::uint32_t sampleRate = 0;

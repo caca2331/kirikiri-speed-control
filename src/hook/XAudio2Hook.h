@@ -61,6 +61,7 @@ private:
     bool m_lengthGateEnabled = true;
     float m_lengthGateSeconds = 30.0f;
     std::map<std::uintptr_t, VoiceContext> m_contexts;
+    std::map<std::uintptr_t, std::unique_ptr<DspPipeline>> m_pipelines;
     std::mutex m_mutex;
     std::string m_version;
     HANDLE m_sharedMapping = nullptr;
