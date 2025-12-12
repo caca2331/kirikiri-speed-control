@@ -4,11 +4,11 @@
 This repository contains an early scaffold for a Kirikiri voice speed controller. The Windows-specific hook targets are not built on non-Windows hosts.
 
 ## Building
-Use CMake to generate a Visual Studio solution. SoundTouch integration is disabled by default to keep the scaffold self-contained; enable with `-DUSE_SOUNDTOUCH=ON` after providing the dependency.
+Use CMake to generate a Visual Studio solution. SoundTouch binaries/headers are bundled under `externals/soundtouch` and are always enabled; vcpkg is only used as a fallback if the bundled copy is missing.
 
 ### Windows (dual-arch, staged dist folders)
 ```powershell
-cmake -B build -S . -A x64 -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON
+cmake -B build -S . -A x64 -DBUILD_GUI=ON
 cmake --build build --config Release --target dist_dual_arch
 ```
 `dist_dual_arch` configures/builds `build.x64` and `build.x86`, then stages:

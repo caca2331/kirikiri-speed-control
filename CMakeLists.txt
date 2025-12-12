@@ -11,8 +11,34 @@ if(MSVC)
 endif()
 
 option(BUILD_GUI "Build the optional controller GUI" ON)
-option(USE_SOUNDTOUCH "Enable SoundTouch based DSP (requires library)" OFF)
 option(BUILD_TESTS "Build DSP smoke tests (desktop only)" OFF)
+
+# --- SoundTouch dependency (always enabled)
+set(SOUNDTOUCH_ROOT "${CMAKE_SOURCE_DIR}/externals/soundtouch")
+set(_soundtouch_arch_dir "x64")
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(_soundtouch_arch_dir "x86")
+endif()
+
+set(_soundtouch_include "${SOUNDTOUCH_ROOT}/include")
+set(_soundtouch_lib "${SOUNDTOUCH_ROOT}/lib/${_soundtouch_arch_dir}/SoundTouch.lib")
+set(_soundtouch_dll "${SOUNDTOUCH_ROOT}/bin/${_soundtouch_arch_dir}/SoundTouch.dll")
+set(_soundtouch_from_externals OFF)
+
+if(EXISTS "${_soundtouch_lib}" AND EXISTS "${_soundtouch_include}")
+    add_library(SoundTouch::SoundTouch SHARED IMPORTED)
+    set_target_properties(SoundTouch::SoundTouch PROPERTIES
+        IMPORTED_IMPLIB "${_soundtouch_lib}"
+        IMPORTED_LOCATION "${_soundtouch_dll}"
+    )
+    target_include_directories(SoundTouch::SoundTouch INTERFACE "${_soundtouch_include}")
+    set(_soundtouch_from_externals ON)
+    set(_soundtouch_runtime "${_soundtouch_dll}")
+else()
+    # Fallback to system/vcpkg package if externals are missing.
+    find_package(SoundTouch CONFIG REQUIRED)
+    get_target_property(_soundtouch_runtime SoundTouch::SoundTouch IMPORTED_LOCATION)
+endif()
 
 add_library(krkr_common STATIC
     src/common/DspPipeline.cpp
@@ -20,47 +46,45 @@ add_library(krkr_common STATIC
     src/common/EnvOverrides.cpp
 )
 target_include_directories(krkr_common PUBLIC src)
-target_compile_definitions(krkr_common PUBLIC
-    $<$<BOOL:${USE_SOUNDTOUCH}>:USE_SOUNDTOUCH>
+target_compile_definitions(krkr_common PUBLIC USE_SOUNDTOUCH)
+# Add SoundTouch headers explicitly for this target to satisfy MSVC include lookup.
+target_include_directories(krkr_common PRIVATE
+    $<TARGET_PROPERTY:SoundTouch::SoundTouch,INTERFACE_INCLUDE_DIRECTORIES>
 )
-if(USE_SOUNDTOUCH)
-    # Hint CMake where the vcpkg-provided SoundTouch package lives.
-    if(NOT DEFINED SoundTouch_DIR)
-        set(_vcpkg_root "$ENV{VCPKG_ROOT}")
-        if(NOT _vcpkg_root AND EXISTS "C:/vcpkg")
-            set(_vcpkg_root "C:/vcpkg")
-        endif()
+target_link_libraries(krkr_common PUBLIC SoundTouch::SoundTouch)
 
-        if(_vcpkg_root)
-            if(DEFINED VCPKG_TARGET_TRIPLET)
-                set(_vcpkg_triplet "${VCPKG_TARGET_TRIPLET}")
-            elseif(DEFINED ENV{VCPKG_DEFAULT_TRIPLET})
-                set(_vcpkg_triplet "$ENV{VCPKG_DEFAULT_TRIPLET}")
-            else()
-                set(_vcpkg_triplet "x64-windows")
-            endif()
-            set(SoundTouch_DIR "${_vcpkg_root}/installed/${_vcpkg_triplet}/share/soundtouch" CACHE PATH "Path to SoundTouch package config")
-        endif()
-    endif()
-    find_package(SoundTouch CONFIG REQUIRED)
-    # Add SoundTouch headers explicitly for this target to satisfy MSVC include lookup.
-    target_include_directories(krkr_common PRIVATE
-        $<TARGET_PROPERTY:SoundTouch::SoundTouch,INTERFACE_INCLUDE_DIRECTORIES>
-    )
-    target_link_libraries(krkr_common PUBLIC SoundTouch::SoundTouch)
-
-    function(copy_soundtouch_runtime target)
-        if(NOT TARGET SoundTouch::SoundTouch)
-            return()
-        endif()
+function(copy_soundtouch_runtime target)
+    if(DEFINED _soundtouch_runtime AND EXISTS "${_soundtouch_runtime}")
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:SoundTouch::SoundTouch>
+                "${_soundtouch_runtime}"
                 $<TARGET_FILE_DIR:${target}>
             COMMENT "Copying SoundTouch runtime for ${target}"
         )
-    endfunction()
-endif()
+    elseif(TARGET SoundTouch::SoundTouch)
+        get_target_property(_st_runtime SoundTouch::SoundTouch IMPORTED_LOCATION)
+        if(NOT _st_runtime)
+            get_target_property(_st_runtime SoundTouch::SoundTouch IMPORTED_LOCATION_RELEASE)
+        endif()
+        if(NOT _st_runtime)
+            get_target_property(_st_runtime SoundTouch::SoundTouch IMPORTED_LOCATION_RELWITHDEBINFO)
+        endif()
+        if(NOT _st_runtime)
+            get_target_property(_st_runtime SoundTouch::SoundTouch IMPORTED_LOCATION_MINSIZEREL)
+        endif()
+        if(NOT _st_runtime)
+            get_target_property(_st_runtime SoundTouch::SoundTouch IMPORTED_LOCATION_DEBUG)
+        endif()
+        if(_st_runtime AND EXISTS "${_st_runtime}")
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${_st_runtime}"
+                    $<TARGET_FILE_DIR:${target}>
+                COMMENT "Copying SoundTouch runtime for ${target}"
+            )
+        endif()
+    endif()
+endfunction()
 
 if(WIN32)
     add_library(krkr_hook_core STATIC
@@ -76,9 +100,7 @@ if(WIN32)
         src/hook/dllmain.cpp
     )
     target_link_libraries(krkr_speed_hook PRIVATE krkr_hook_core)
-    if(USE_SOUNDTOUCH)
-        copy_soundtouch_runtime(krkr_speed_hook)
-    endif()
+    copy_soundtouch_runtime(krkr_speed_hook)
 
     if(BUILD_GUI)
         add_executable(KrkrSpeedController WIN32
@@ -86,9 +108,7 @@ if(WIN32)
             src/gui/ui.cpp
         )
         target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32)
-        if(USE_SOUNDTOUCH)
-            copy_soundtouch_runtime(KrkrSpeedController)
-        endif()
+        copy_soundtouch_runtime(KrkrSpeedController)
     endif()
 else()
     message(STATUS "Non-Windows host detected; building common library and tests only.")
@@ -105,4 +125,8 @@ if(WIN32)
     )
 endif()
 
-message(STATUS "SoundTouch support: ${USE_SOUNDTOUCH}")
+if(_soundtouch_from_externals)
+    message(STATUS "SoundTouch: using externals/soundtouch (${_soundtouch_arch_dir})")
+else()
+    message(STATUS "SoundTouch: found via package manager")
+endif()

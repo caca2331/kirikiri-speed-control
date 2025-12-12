@@ -15,7 +15,7 @@ function(configure_and_build name build_dir arch_triplet arch_flag)
     message(STATUS "[${name}] Configuring (${arch_flag})")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -S "${SOURCE_DIR}" -B "${build_dir}" -A "${arch_flag}"
-                -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON -DBUILD_TESTS=OFF
+                -DBUILD_GUI=ON -DBUILD_TESTS=OFF
                 -DVCPKG_TARGET_TRIPLET=${arch_triplet}
         RESULT_VARIABLE cfg_r
     )
@@ -34,6 +34,17 @@ function(configure_and_build name build_dir arch_triplet arch_flag)
 endfunction()
 
 function(find_soundtouch triplet out_path)
+    # Prefer bundled binaries in externals/soundtouch.
+    set(arch_dir "x64")
+    if(triplet STREQUAL "x86-windows")
+        set(arch_dir "x86")
+    endif()
+    set(ext_candidate "${SOURCE_DIR}/externals/soundtouch/bin/${arch_dir}/SoundTouch.dll")
+    if(EXISTS "${ext_candidate}")
+        set(${out_path} "${ext_candidate}" PARENT_SCOPE)
+        return()
+    endif()
+
     set(root "$ENV{VCPKG_ROOT}")
     if(NOT root)
         set(root "C:/vcpkg")

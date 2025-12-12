@@ -4,11 +4,11 @@
 本仓库提供了一个 Kirikiri 语音变速控制器骨架。非 Windows 平台不会编译 Hook/GUI 目标。
 
 ## 构建
-使用 CMake 生成 Visual Studio 解决方案。默认关闭 SoundTouch 以保持自包含；在准备好依赖后可通过 `-DUSE_SOUNDTOUCH=ON` 启用。
+使用 CMake 生成 Visual Studio 解决方案。`externals/soundtouch` 已包含 SoundTouch 头文件与二进制并默认启用；只有当该目录缺失时才回退到 vcpkg。
 
 ### Windows（双架构并打包到 dist）
 ```powershell
-cmake -B build -S . -A x64 -DUSE_SOUNDTOUCH=ON -DBUILD_GUI=ON
+cmake -B build -S . -A x64 -DBUILD_GUI=ON
 cmake --build build --config Release --target dist_dual_arch
 ```
 `dist_dual_arch` 会配置/编译 `build.x64` 与 `build.x86`，并将文件放入：
