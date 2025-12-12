@@ -19,12 +19,20 @@ dist/
 ```
 Run the controller that matches your target’s bitness; the GUI auto-picks the right hook DLL from `dist/x86` or `dist/x64`.
 
+### Controller CLI options (no env vars)
+Flags are sent to the injected hook via shared settings:
+- `--log` / `--enable-log`
+- `--log-dir <path>`
+- `--skip-ds`, `--skip-xaudio2`, `--safe-mode`, `--disable-veh`
+- `--bgm-secs <seconds>` (length/BGM gate)
+- `--force-all` (process all audio), `--disable-bgm` (never treat as BGM)
+
 ## Usage
 - Most Kirikiri games are 32-bit; use the x86 controller for those.
 - If AV blocks the binaries, add an exception or temporarily disable it.
 - If the target is protected/elevated, run the controller as Administrator.
-- Default hooks: DirectSound + XAudio2 enabled; logging is off unless `KRKR_ENABLE_LOG=1`.
-- BGM detection: stereo/looping buffers are treated as BGM unless you set `KRKR_DS_FORCE=1`.
+- Default hooks: DirectSound + XAudio2 enabled; logging is off unless `--log` is passed.
+- BGM detection: stereo/looping buffers are treated as BGM unless you pass `--force-all`.
 
 ## Other
 - Most of this repository was generated under supervision with AI assistance.

@@ -18,37 +18,19 @@ DirectSoundHook &DirectSoundHook::instance() {
     return hook;
 }
 
+void DirectSoundHook::configure(const Config &cfg) {
+    m_config = cfg;
+}
+
 void DirectSoundHook::initialize() {
-    static auto envFlagOn = [](const wchar_t *name) {
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return false;
-        return wcscmp(buf, L"1") == 0;
-    };
-    static auto envFloat = [](const wchar_t *name, float fallback) {
-        wchar_t buf[32] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return fallback;
-        try {
-            return std::stof(std::wstring(buf));
-        } catch (...) {
-            return fallback;
-        }
-    };
-    auto envFlagOff = [&](const wchar_t *name) {
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return false;
-        return wcscmp(buf, L"1") == 0;
-    };
-    // Default ON; allow opt-out with KRKR_SKIP_DS=1 for troubleshooting.
-    if (envFlagOn(L"KRKR_SKIP_DS")) {
-        KRKR_LOG_INFO("KRKR_SKIP_DS set; DirectSound hooks disabled");
+    // Default ON; allow opt-out via config.
+    if (m_config.skip) {
+        KRKR_LOG_INFO("DirectSound hooks disabled by config");
         return;
     }
-    m_bgmSecondsGate = envFloat(L"KRKR_DS_BGM_SECS", 60.0f);
-    m_disableBgm = envFlagOn(L"KRKR_DS_DISABLE_BGM");
-    m_forceApply = envFlagOn(L"KRKR_DS_FORCE");
+    m_bgmSecondsGate = m_config.bgmGateSeconds;
+    m_disableBgm = m_config.disableBgm;
+    m_forceApply = m_config.forceAll;
     KRKR_LOG_INFO("DirectSound hook initialization started");
     hookEntryPoints();
     scanLoadedModules();
@@ -287,16 +269,8 @@ ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
 
 HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
-    static bool disableDsp = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DISABLE_DSP", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-    }();
-    static bool useWsola = []{
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_DS_WSOLA", buf, static_cast<DWORD>(std::size(buf)));
-        return (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-    }();
+    static bool disableDsp = false;
+    static bool useWsola = false;
     if (!m_loggedUnlockOnce.exchange(true)) {
         KRKR_LOG_INFO("DirectSound UnlockHook engaged on buffer=" +
                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));

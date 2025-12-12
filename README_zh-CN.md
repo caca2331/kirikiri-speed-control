@@ -19,13 +19,21 @@ dist/
 ```
 运行与目标进程位数相同的控制器；GUI 会自动选择对应的 Hook DLL（dist/x86 或 dist/x64）。
 
+### 控制器命令行参数（无需环境变量）
+这些标志通过共享设置传给被注入的 Hook：
+- `--log` / `--enable-log`
+- `--log-dir <路径>`
+- `--skip-ds`、`--skip-xaudio2`、`--safe-mode`、`--disable-veh`
+- `--bgm-secs <秒数>`（长度/BGM 门槛）
+- `--force-all`（处理全部音频）、`--disable-bgm`（从不视为 BGM）
+
 ## 使用
 - 大多数krkr游戏都是32位的，此时使用x86版本的controller
 - 如杀毒软件误报须添加信任或暂时关闭杀毒软件
 - 如要注入的游戏受到保护，则须以管理权限运行本工具
 - 如有未适配的游戏请提交Issue或联系作者
-- 默认启用 DirectSound 与 XAudio2 Hook；日志可用 `KRKR_ENABLE_LOG=1` 打开
-- BGM 判定：立体声或循环缓冲默认视为 BGM，除非设置 `KRKR_DS_FORCE=1`
+- 默认启用 DirectSound 与 XAudio2 Hook；日志需通过 `--log` 参数打开
+- BGM 判定：立体声或循环缓冲默认视为 BGM，除非使用 `--force-all`
 
 ## 其他
 - 本仓库主体部分在监督下由AI生成

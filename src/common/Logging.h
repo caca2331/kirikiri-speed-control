@@ -11,9 +11,13 @@ enum class LogLevel { Debug, Info, Warn, Error };
 #endif
 
 #if KRKR_ENABLE_LOGGING
+void SetLoggingEnabled(bool enabled);
+void SetLogDirectory(const std::wstring &path);
 void logMessage(LogLevel level, const std::string &message);
 void logMessage(LogLevel level, const std::wstring &message);
 #else
+inline void SetLoggingEnabled(bool) {}
+inline void SetLogDirectory(const std::wstring &) {}
 inline void logMessage(LogLevel, const std::string &) {}
 inline void logMessage(LogLevel, const std::wstring &) {}
 #endif

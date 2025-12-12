@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <optional>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -26,6 +27,8 @@ struct LoggerState {
     std::ofstream stream;
     std::string path;
     bool initialized = false;
+    bool enabled = false;
+    std::optional<std::filesystem::path> logDirOverride;
 };
 
 std::string levelToString(LogLevel level) {
@@ -140,21 +143,18 @@ std::filesystem::path executableStem() {
 }
 
 std::filesystem::path chooseLogDirectory() {
-    // 1) env var
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"KRKR_LOG_DIR", buf, MAX_PATH) > 0) {
-        std::filesystem::path p(buf);
-        if (std::filesystem::exists(p) && std::filesystem::is_directory(p)) return p;
+    auto &s = state();
+    if (s.logDirOverride && std::filesystem::exists(*s.logDirOverride) &&
+        std::filesystem::is_directory(*s.logDirOverride)) {
+        return *s.logDirOverride;
     }
-#endif
-    // 2) hint file in temp
+    // 1) hint file in temp
     auto hint = readHintPath();
     if (!hint.empty()) return hint;
-    // 3) module directory
+    // 2) module directory
     auto mod = moduleDirectory();
     if (!mod.empty()) return mod;
-    // 4) temp
+    // 3) temp
     std::error_code ec;
     return std::filesystem::temp_directory_path(ec);
 }
@@ -202,24 +202,11 @@ void writeLine(LoggerState &stateRef, LogLevel level, const std::string &line) {
 } // namespace
 
 void logMessage(LogLevel level, const std::string &message) {
-    static bool loggingChecked = false;
-    static bool loggingEnabled = false;
-    if (!loggingChecked) {
-#ifdef _WIN32
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(L"KRKR_ENABLE_LOG", buf, static_cast<DWORD>(std::size(buf)));
-        loggingEnabled = (n > 0 && n < std::size(buf) && wcscmp(buf, L"1") == 0);
-#else
-        const char *env = std::getenv("KRKR_ENABLE_LOG");
-        loggingEnabled = env && env[0] == '1';
-#endif
-        loggingChecked = true;
-    }
-    if (!loggingEnabled) {
+    auto &s = state();
+    if (!s.enabled) {
         return;
     }
 
-    auto &s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
     ensureOpen(s);
     if (s.stream.is_open()) {
@@ -232,6 +219,20 @@ void logMessage(LogLevel level, const std::string &message) {
 
 void logMessage(LogLevel level, const std::wstring &message) {
     logMessage(level, toUtf8(message));
+}
+
+void SetLoggingEnabled(bool enabled) {
+    auto &s = state();
+    s.enabled = enabled;
+}
+
+void SetLogDirectory(const std::wstring &path) {
+    auto &s = state();
+    if (path.empty()) {
+        s.logDirOverride.reset();
+        return;
+    }
+    s.logDirOverride = std::filesystem::path(path);
 }
 
 } // namespace krkrspeed

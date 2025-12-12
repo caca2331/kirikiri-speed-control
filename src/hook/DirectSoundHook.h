@@ -16,6 +16,13 @@ class DirectSoundHook {
 public:
     static DirectSoundHook &instance();
     void initialize();
+    struct Config {
+        bool skip = false;
+        bool disableBgm = false;
+        bool forceAll = false;
+        float bgmGateSeconds = 60.0f;
+    };
+    void configure(const Config &cfg);
 
     // Allow late binding when DirectSoundCreate8 is resolved dynamically.
     void setOriginalCreate8(void *fn);
@@ -86,8 +93,9 @@ private:
     bool m_disableVtablePatch = false; // retained for safety; no env toggle now
     bool m_disableBgm = false;
     bool m_forceApply = false;
-    float m_bgmSecondsGate = 15.0f;
+    float m_bgmSecondsGate = 60.0f;
     bool m_loopDetect = true;
+    Config m_config{};
 };
 
 } // namespace krkrspeed

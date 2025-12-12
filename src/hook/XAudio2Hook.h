@@ -23,6 +23,7 @@ public:
 
     void setUserSpeed(float speed);
     void configureLengthGate(bool enabled, float seconds);
+    void setSkip(bool skip) { m_skip = skip; }
     float getUserSpeed() const { return m_userSpeed; }
     bool isLengthGateEnabled() const { return m_lengthGateEnabled; }
     float lengthGateSeconds() const { return m_lengthGateSeconds; }
@@ -60,6 +61,7 @@ private:
     float m_userSpeed = 2.0f;
     bool m_lengthGateEnabled = true;
     float m_lengthGateSeconds = 30.0f;
+    bool m_skip = false;
     std::map<std::uintptr_t, VoiceContext> m_contexts;
     std::map<std::uintptr_t, std::unique_ptr<DspPipeline>> m_pipelines;
     std::mutex m_mutex;

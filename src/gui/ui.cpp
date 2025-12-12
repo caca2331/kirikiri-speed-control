@@ -43,6 +43,14 @@ struct AppState {
     float currentSpeed = 2.0f;
     float lastValidSpeed = 2.0f;
     float gateSeconds = 60.0f;
+    bool enableLog = false;
+    bool skipDirectSound = false;
+    bool skipXAudio2 = false;
+    bool safeMode = false;
+    bool disableVeh = false;
+    bool disableBgm = false;
+    bool forceAll = false;
+    float bgmSeconds = 60.0f;
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
     std::map<DWORD, HANDLE> sharedMaps;
     std::map<DWORD, krkrspeed::SharedSettings *> sharedViews;
@@ -626,7 +634,15 @@ bool writeSharedSettingsForPid(DWORD pid, float speed, bool gateEnabled, float d
     settings.userSpeed = std::clamp(speed, 0.5f, 10.0f);
     settings.lengthGateSeconds = std::clamp(duration, 0.1f, 600.0f);
     settings.lengthGateEnabled = gateEnabled ? 1u : 0u;
-    settings.version = 1;
+    settings.version = 2;
+    settings.enableLog = g_state.enableLog ? 1u : 0u;
+    settings.skipDirectSound = g_state.skipDirectSound ? 1u : 0u;
+    settings.skipXAudio2 = g_state.skipXAudio2 ? 1u : 0u;
+    settings.safeMode = g_state.safeMode ? 1u : 0u;
+    settings.disableVeh = g_state.disableVeh ? 1u : 0u;
+    settings.disableBgm = g_state.disableBgm ? 1u : 0u;
+    settings.forceAll = g_state.forceAll ? 1u : 0u;
+    settings.bgmSecondsGate = std::clamp(g_state.bgmSeconds, 0.1f, 600.0f);
     *view = settings;
     return true;
 }
@@ -857,6 +873,25 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 }
 
 } // namespace
+
+static ControllerOptions g_initialOptions{};
+
+void setInitialOptions(const ControllerOptions &opts) {
+    g_initialOptions = opts;
+    g_state.enableLog = opts.enableLog;
+    g_state.skipDirectSound = opts.skipDirectSound;
+    g_state.skipXAudio2 = opts.skipXAudio2;
+    g_state.safeMode = opts.safeMode;
+    g_state.disableVeh = opts.disableVeh;
+    g_state.disableBgm = opts.disableBgm;
+    g_state.forceAll = opts.forceAll;
+    g_state.bgmSeconds = opts.bgmSeconds;
+    g_state.gateSeconds = opts.bgmSeconds;
+}
+
+ControllerOptions getInitialOptions() {
+    return g_initialOptions;
+}
 
 int runController(HINSTANCE hInstance, int nCmdShow) {
     KRKR_LOG_INFO("KrkrSpeedController GUI starting");
