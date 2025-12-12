@@ -4,7 +4,7 @@
 This repository contains an early scaffold for a Kirikiri voice speed controller. The Windows-specific hook targets are not built on non-Windows hosts.
 
 ## Building
-Use CMake to generate a Visual Studio solution. SoundTouch binaries/headers are bundled under `externals/soundtouch` and are always enabled; vcpkg is only used as a fallback if the bundled copy is missing.
+Use CMake to generate a Visual Studio solution. SoundTouch binaries/headers are bundled under `externals/soundtouch` and are always enabled; vcpkg is only a fallback if the bundle is missing.
 
 ### Windows (dual-arch, staged dist folders)
 ```powershell
@@ -14,10 +14,11 @@ cmake --build build --config Release --target dist_dual_arch
 `dist_dual_arch` configures/builds `build.x64` and `build.x86`, then stages:
 ```
 dist/
-  x64/ KrkrSpeedController.exe, krkr_speed_hook.dll, SoundTouch.dll
-  x86/ KrkrSpeedController.exe, krkr_speed_hook.dll, SoundTouch.dll
+  x64/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
+  x86/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
+  KrkrSpeedController_x86.lnk  (Windows shortcut to launch the x86 controller)
 ```
-Run the controller that matches your target’s bitness; the GUI auto-picks the right hook DLL from `dist/x86` or `dist/x64`.
+Either controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the sibling dist folder.
 
 ### Controller CLI options (no env vars)
 Flags are sent to the injected hook via shared settings:

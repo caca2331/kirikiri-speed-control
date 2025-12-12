@@ -169,7 +169,9 @@ void XAudio2Hook::bootstrapVtable() {
         hr = CoCreateInstance(kClsidXAudio2_27, nullptr, CLSCTX_INPROC_SERVER, __uuidof(IXAudio2),
                               reinterpret_cast<void **>(&xa));
         if (FAILED(hr) || !xa) {
-            KRKR_LOG_WARN("Bootstrap could not create IXAudio2 instance (hr=" + std::to_string(hr) + ")");
+            if (!m_warnedBootstrapOnce.exchange(true)) {
+                KRKR_LOG_WARN("Bootstrap could not create IXAudio2 instance (hr=" + std::to_string(hr) + ")");
+            }
             return;
         }
         m_version = "2.7";
@@ -198,6 +200,7 @@ void XAudio2Hook::bootstrapVtable() {
 
 void XAudio2Hook::scheduleBootstrapRetries() {
     std::thread([] {
+        bool loggedOnce = false;
         for (int i = 0; i < 20; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             auto &self = XAudio2Hook::instance();
@@ -209,6 +212,11 @@ void XAudio2Hook::scheduleBootstrapRetries() {
             }
             self.ensureCreateFunction();
             self.bootstrapVtable();
+            if (!loggedOnce && !self.m_origSubmit) {
+                loggedOnce = true;
+                // only log first retry failure; final message printed after loop
+                KRKR_LOG_DEBUG("Bootstrap retry failed to obtain IXAudio2 vtable; will keep trying");
+            }
         }
         KRKR_LOG_WARN("Bootstrap retries exhausted without obtaining XAudio2 vtable; audio may remain unhooked");
     }).detach();

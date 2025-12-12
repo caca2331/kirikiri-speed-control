@@ -14,10 +14,11 @@ cmake --build build --config Release --target dist_dual_arch
 `dist_dual_arch` 会配置/编译 `build.x64` 与 `build.x86`，并将文件放入：
 ```
 dist/
-  x64/ KrkrSpeedController.exe, krkr_speed_hook.dll, SoundTouch.dll
-  x86/ KrkrSpeedController.exe, krkr_speed_hook.dll, SoundTouch.dll
+  x64/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
+  x86/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
+  KrkrSpeedController_x86.lnk (一键启动 x86 控制器的 Windows 快捷方式)
 ```
-运行与目标进程位数相同的控制器；GUI 会自动选择对应的 Hook DLL（dist/x86 或 dist/x64）。
+任意位数的控制器都可以注入 x86 和 x64 游戏：控制器会根据目标进程位数选择匹配的 injector 和 Hook DLL。
 
 ### 控制器命令行参数（无需环境变量）
 这些标志通过共享设置传给被注入的 Hook：

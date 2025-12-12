@@ -68,6 +68,7 @@ private:
     std::string m_version;
     HANDLE m_sharedMapping = nullptr;
     SharedSettings *m_sharedView = nullptr;
+    std::atomic<bool> m_warnedBootstrapOnce{false};
 
     // Original functions.
     using PFN_XAudio2Create = HRESULT(WINAPI *)(IXAudio2 **ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR XAudio2Processor);

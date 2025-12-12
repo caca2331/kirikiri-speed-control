@@ -96,6 +96,11 @@ if(WIN32)
     target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound xaudio2 dxguid winmm)
     target_include_directories(krkr_hook_core PUBLIC src)
 
+    add_executable(krkr_injector
+        src/injector/injector_main.cpp
+    )
+    target_link_libraries(krkr_injector PRIVATE krkr_common)
+
     add_library(krkr_speed_hook SHARED
         src/hook/dllmain.cpp
     )

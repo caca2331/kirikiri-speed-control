@@ -311,111 +311,40 @@ void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes)
 }
 
 std::filesystem::path getProcessDirectory(DWORD pid);
-bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &error);
+bool runInjector(ProcessArch arch, DWORD pid, const std::wstring &dllPath, std::wstring &error);
+bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::wstring &dllPath, std::wstring &error);
 
-bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &error) {
+bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::wstring &dllPath, std::wstring &error) {
     ensureDebugPrivilege();
 
-    // Preflight: ensure we can load the DLL locally (catches missing dependencies).
-    auto preflightLoad = [](const std::wstring &path, std::wstring &err) -> bool {
-        SetEnvironmentVariableW(L"KRKR_SKIP_HOOK_INIT", L"1"); // avoid patching the controller during the preflight load
-        HMODULE localHandle = LoadLibraryW(path.c_str());
-        SetEnvironmentVariableW(L"KRKR_SKIP_HOOK_INIT", nullptr);
-        if (!localHandle) {
-            err = L"Preflight LoadLibraryW failed locally (error " + std::to_wstring(GetLastError()) +
-                  L"); check dependencies beside the DLL.";
+    // Preflight: ensure we can load the DLL locally (catches missing dependencies) when arch matches.
+    const ProcessArch selfArch = getSelfArch();
+    const bool archMismatch = (targetArch != ProcessArch::Unknown && selfArch != ProcessArch::Unknown && targetArch != selfArch);
+    if (!archMismatch) {
+        auto preflightLoad = [](const std::wstring &path, std::wstring &err) -> bool {
+            SetEnvironmentVariableW(L"KRKR_SKIP_HOOK_INIT", L"1"); // avoid patching the controller during the preflight load
+            HMODULE localHandle = LoadLibraryW(path.c_str());
+            SetEnvironmentVariableW(L"KRKR_SKIP_HOOK_INIT", nullptr);
+            if (!localHandle) {
+                err = L"Preflight LoadLibraryW failed locally (error " + std::to_wstring(GetLastError()) +
+                      L"); check dependencies beside the DLL.";
+                return false;
+            }
+            FreeLibrary(localHandle);
+            return true;
+        };
+
+        std::wstring preflightErr;
+        if (!preflightLoad(dllPath, preflightErr)) {
+            error = preflightErr;
             return false;
         }
-        FreeLibrary(localHandle);
-        return true;
-    };
-
-    std::wstring preflightErr;
-    if (!preflightLoad(dllPath, preflightErr)) {
-        error = preflightErr;
-        return false;
+    } else {
+        KRKR_LOG_INFO("Skipping preflight load due to arch mismatch controller=" + std::string(selfArch == ProcessArch::X64 ? "x64" : "x86")
+                      + " target=" + std::string(targetArch == ProcessArch::X64 ? "x64" : "x86"));
     }
 
     std::vector<std::wstring> attemptNotes;
-
-    auto tryLoad = [&](const std::wstring &path, size_t attemptIndex, std::wstring &err) -> bool {
-        HANDLE process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
-                                         PROCESS_VM_WRITE | PROCESS_VM_READ,
-                                     FALSE, pid);
-        if (!process) {
-            const DWORD e = GetLastError();
-            err = L"OpenProcess failed (error " + std::to_wstring(e) + L")";
-            if (e == ERROR_ACCESS_DENIED) {
-                err += L"; run the controller as Administrator or ensure the target is not elevated/protected.";
-            }
-            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-            return false;
-        }
-
-        const SIZE_T bytes = (path.size() + 1) * sizeof(wchar_t);
-        LPVOID remoteMemory = VirtualAllocEx(process, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!remoteMemory) {
-            err = L"VirtualAllocEx failed (error " + std::to_wstring(GetLastError()) + L")";
-            CloseHandle(process);
-            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-            return false;
-        }
-
-        if (!WriteProcessMemory(process, remoteMemory, path.c_str(), bytes, nullptr)) {
-            err = L"WriteProcessMemory failed (error " + std::to_wstring(GetLastError()) + L")";
-            VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
-            CloseHandle(process);
-            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-            return false;
-        }
-
-        HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
-        auto loadLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(kernel, "LoadLibraryW"));
-        if (!loadLibrary) {
-            err = L"Unable to resolve LoadLibraryW";
-            VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
-            CloseHandle(process);
-            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-            return false;
-        }
-
-        HANDLE thread = CreateRemoteThread(process, nullptr, 0, loadLibrary, remoteMemory, 0, nullptr);
-        if (!thread) {
-            err = L"CreateRemoteThread failed (error " + std::to_wstring(GetLastError()) + L")";
-            VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
-            CloseHandle(process);
-            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-            return false;
-        }
-
-        DWORD waitResult = WaitForSingleObject(thread, 5000);
-        DWORD exitCode = 0;
-        GetExitCodeThread(thread, &exitCode);
-
-        CloseHandle(thread);
-        VirtualFreeEx(process, remoteMemory, 0, MEM_RELEASE);
-        CloseHandle(process);
-
-        if (waitResult == WAIT_TIMEOUT) {
-            err = L"Injection thread timed out; target may be suspended or blocking remote threads.";
-            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-            return false;
-        }
-        if (waitResult == WAIT_FAILED) {
-            err = L"Injection thread wait failed (error " + std::to_wstring(GetLastError()) + L")";
-            attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-            return false;
-        }
-        if (exitCode != 0) {
-            KRKR_LOG_INFO("Injected krkr_speed_hook.dll into pid " + std::to_string(pid) +
-                          " using path candidate " + std::to_string(attemptIndex));
-            return true;
-        }
-
-        err = L"Remote LoadLibraryW returned 0 for path: " + path;
-        attemptNotes.push_back(L"#" + std::to_wstring(attemptIndex) + L" " + path + L": " + err);
-        return false;
-    };
 
     auto buildCandidates = [&](const std::wstring &basePath) {
         std::vector<std::wstring> out;
@@ -433,9 +362,11 @@ bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &
     size_t attemptIdx = 0;
     for (const auto &p : candidates) {
         if (p.empty()) continue;
-        if (tryLoad(p, attemptIdx++, lastError)) {
+        if (runInjector(targetArch, pid, p, lastError)) {
             return true;
         }
+        attemptNotes.push_back(L"#" + std::to_wstring(attemptIdx) + L" " + p + L": " + lastError);
+        ++attemptIdx;
     }
 
     // If initial attempts failed, try copying into the target's exe directory and retry.
@@ -469,9 +400,11 @@ bool injectDllIntoProcess(DWORD pid, const std::wstring &dllPath, std::wstring &
             auto more = buildCandidates(targetDll.wstring());
             for (const auto &p : more) {
                 if (p.empty()) continue;
-                if (tryLoad(p, attemptIdx++, lastError)) {
+                if (runInjector(targetArch, pid, p, lastError)) {
                     return true;
                 }
+                attemptNotes.push_back(L"#" + std::to_wstring(attemptIdx) + L" " + p + L": " + lastError);
+                ++attemptIdx;
             }
         }
     }
@@ -508,6 +441,8 @@ void refreshProcessList(HWND combo, HWND statusLabel) {
 
 bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &error) {
     const auto baseDir = getExecutableDir();
+    const auto siblingX86 = baseDir.parent_path() / L"x86";
+    const auto siblingX64 = baseDir.parent_path() / L"x64";
     if (baseDir.empty()) {
         error = L"Unable to locate controller directory.";
         return false;
@@ -517,6 +452,7 @@ bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &er
     if (arch == ProcessArch::X86) {
         candidates = {
             baseDir / L"x86" / L"krkr_speed_hook.dll",
+            siblingX86 / L"krkr_speed_hook.dll",
             baseDir / L"krkr_speed_hook32.dll",
             baseDir / L"krkr_speed_hook_x86.dll",
             baseDir / L"krkr_speed_hook.dll" // fallback
@@ -524,6 +460,7 @@ bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &er
     } else {
         candidates = {
             baseDir / L"x64" / L"krkr_speed_hook.dll",
+            siblingX64 / L"krkr_speed_hook.dll",
             baseDir / L"krkr_speed_hook64.dll",
             baseDir / L"krkr_speed_hook_x64.dll",
             baseDir / L"krkr_speed_hook.dll" // fallback
@@ -591,6 +528,63 @@ std::filesystem::path getProcessDirectory(DWORD pid) {
     CloseHandle(process);
     std::filesystem::path exePath(buffer);
     return exePath.parent_path();
+}
+
+std::filesystem::path findInjectorForArch(ProcessArch arch) {
+    const auto baseDir = getExecutableDir();
+    const auto siblingX86 = baseDir.parent_path() / L"x86";
+    const auto siblingX64 = baseDir.parent_path() / L"x64";
+    std::vector<std::filesystem::path> candidates;
+    if (arch == ProcessArch::X86) {
+        candidates = {
+            baseDir / L"x86" / L"krkr_injector.exe",
+            siblingX86 / L"krkr_injector.exe",
+            baseDir / L"krkr_injector.exe" // fallback (may be wrong arch)
+        };
+    } else if (arch == ProcessArch::X64) {
+        candidates = {
+            baseDir / L"x64" / L"krkr_injector.exe",
+            siblingX64 / L"krkr_injector.exe",
+            baseDir / L"krkr_injector.exe"
+        };
+    }
+    for (const auto &c : candidates) {
+        if (!c.empty() && std::filesystem::exists(c)) {
+            return std::filesystem::absolute(c);
+        }
+    }
+    return {};
+}
+
+bool runInjector(ProcessArch arch, DWORD pid, const std::wstring &dllPath, std::wstring &error) {
+    auto injector = findInjectorForArch(arch);
+    if (injector.empty()) {
+        error = L"Injector executable not found for arch " + describeArch(arch);
+        return false;
+    }
+
+    wchar_t cmdLine[1024] = {};
+    swprintf_s(cmdLine, L"\"%s\" %u \"%s\"", injector.c_str(), pid, dllPath.c_str());
+
+    STARTUPINFOW si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+    if (!CreateProcessW(nullptr, cmdLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        error = L"CreateProcess failed for injector (" + injector.wstring() + L") error=" +
+                std::to_wstring(GetLastError());
+        return false;
+    }
+    WaitForSingleObject(pi.hProcess, 5000);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    if (exitCode != 0) {
+        error = L"Injector exit code " + std::to_wstring(exitCode) + L" (" + injector.wstring() + L")";
+        return false;
+    }
+    return true;
 }
 
 bool writeSharedSettingsForPid(DWORD pid, float speed, bool gateEnabled, float duration, std::wstring &error) {
@@ -688,16 +682,6 @@ void handleApply(HWND hwnd) {
         return;
     }
 
-    constexpr ProcessArch selfArch = getSelfArch();
-    if (targetArch != ProcessArch::Unknown && selfArch != ProcessArch::Unknown && targetArch != selfArch) {
-        std::wstring msg = L"Architecture mismatch: controller=" + describeArch(selfArch) +
-                           L", target=" + describeArch(targetArch) +
-                           L". Build/run the " + describeArch(targetArch) +
-                           L" version of krkr_speed_hook.dll + KrkrSpeedController.";
-        setStatus(statusLabel, msg);
-        return;
-    }
-
     std::wstring sharedErr;
     if (!writeSharedSettingsForPid(proc.pid, speed, true, g_state.gateSeconds, sharedErr)) {
         setStatus(statusLabel, sharedErr);
@@ -724,12 +708,13 @@ void handleApply(HWND hwnd) {
     }
 
     std::wstring error;
-    if (injectDllIntoProcess(proc.pid, dllPath, error)) {
+    if (injectDllIntoProcess(targetArch, proc.pid, dllPath, error)) {
         wchar_t message[160] = {};
         swprintf_s(message, L"Injected into %s (PID %u) at %.2fx; gate on @ %.2fs",
                    proc.name.c_str(), proc.pid, speed, g_state.gateSeconds);
         setStatus(statusLabel, message);
     } else {
+        constexpr ProcessArch selfArch = getSelfArch();
         std::wstring detail = L" [controller=" + describeArch(selfArch) + L", target=" + describeArch(targetArch) +
                               L", dll=" + describeArch(dllArch) + L"]";
         setStatus(statusLabel, L"Injection failed: " + error + detail);
