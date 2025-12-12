@@ -19,6 +19,7 @@ struct CliOptions {
     bool disableBgm = false;
     bool forceAll = false;
     float bgmSeconds = 60.0f;
+    std::filesystem::path launchPath;
 };
 
 CliOptions parseArgs() {
@@ -59,6 +60,11 @@ CliOptions parseArgs() {
             opts.forceAll = true;
         } else if (arg == L"--disable-bgm") {
             opts.disableBgm = true;
+        } else if (arg == L"--launch" || arg == L"-l") {
+            std::wstring v;
+            if (next(v)) {
+                opts.launchPath = v;
+            }
         }
     }
 
@@ -79,6 +85,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     controllerOpts.disableBgm = opts.disableBgm;
     controllerOpts.forceAll = opts.forceAll;
     controllerOpts.bgmSeconds = opts.bgmSeconds;
+    controllerOpts.launchPath = opts.launchPath.wstring();
     krkrspeed::ui::setInitialOptions(controllerOpts);
     krkrspeed::SetLoggingEnabled(opts.enableLog);
 

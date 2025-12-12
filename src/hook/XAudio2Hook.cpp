@@ -1,7 +1,6 @@
 #include "XAudio2Hook.h"
 #include "HookUtils.h"
 #include "../common/Logging.h"
-
 #include <algorithm>
 #include <cstdint>
 #include <map>
@@ -94,11 +93,13 @@ void XAudio2Hook::hookEntryPoints() {
     if (patched) {
         KRKR_LOG_INFO("Patched XAudio2Create import for version " + m_version);
     } else {
-        KRKR_LOG_WARN("Failed to patch XAudio2Create import; will fall back to GetProcAddress interception");
+        if (!m_warnedNoExportOnce.exchange(true)) {
+            KRKR_LOG_WARN("Failed to patch XAudio2Create import; will fall back to GetProcAddress interception");
+        }
     }
 }
 
-void XAudio2Hook::ensureCreateFunction() {
+void XAudio2Hook::ensureCreateFunction(bool logOnFail) {
     if (m_origCreate) {
         return;
     }
@@ -108,17 +109,13 @@ void XAudio2Hook::ensureCreateFunction() {
     HMODULE xa6 = GetModuleHandleA("XAudio2_6.dll");
     HMODULE xa5 = GetModuleHandleA("XAudio2_5.dll");
     HMODULE chosen = xa9 ? xa9 : (xa8 ? xa8 : (xa7 ? xa7 : (xa6 ? xa6 : xa5)));
+    if (!chosen) chosen = LoadLibraryA("XAudio2_7.dll");
+    if (!chosen) chosen = LoadLibraryA("XAudio2_6.dll");
+    if (!chosen) chosen = LoadLibraryA("XAudio2_5.dll");
     if (!chosen) {
-        chosen = LoadLibraryA("XAudio2_7.dll");
-    }
-    if (!chosen) {
-        chosen = LoadLibraryA("XAudio2_6.dll");
-    }
-    if (!chosen) {
-        chosen = LoadLibraryA("XAudio2_5.dll");
-    }
-    if (!chosen) {
-        KRKR_LOG_WARN("Could not load any XAudio2 DLL for manual lookup");
+        if (logOnFail && !m_warnedNoExportOnce.exchange(true)) {
+            KRKR_LOG_WARN("Could not load any XAudio2 DLL for manual lookup");
+        }
         return;
     }
     auto fn = reinterpret_cast<PFN_XAudio2Create>(GetProcAddress(chosen, "XAudio2Create"));
@@ -129,7 +126,9 @@ void XAudio2Hook::ensureCreateFunction() {
         else m_version = "2.7";
         KRKR_LOG_INFO("Captured XAudio2Create via manual lookup for version " + m_version);
     } else {
-        KRKR_LOG_WARN("XAudio2Create export not found in loaded DLL; will rely on COM bootstrap");
+        if (!m_warnedNoExportOnce.exchange(true)) {
+            KRKR_LOG_WARN("XAudio2Create export not found in loaded DLL; will rely on COM bootstrap");
+        }
     }
 }
 
@@ -210,7 +209,7 @@ void XAudio2Hook::scheduleBootstrapRetries() {
                     return;
                 }
             }
-            self.ensureCreateFunction();
+            self.ensureCreateFunction(false);
             self.bootstrapVtable();
             if (!loggedOnce && !self.m_origSubmit) {
                 loggedOnce = true;
@@ -310,16 +309,16 @@ HRESULT WINAPI XAudio2Hook::CoCreateInstanceHook(REFCLSID rclsid, LPUNKNOWN pUnk
     }
     const bool isXAudioClsid = IsEqualCLSID(rclsid, kClsidXAudio2_27) || IsEqualCLSID(rclsid, kClsidXAudio2Debug_27);
     const HRESULT hr = g_self->m_origCoCreate(rclsid, pUnkOuter, dwClsContext, riid, ppv);
-    if (FAILED(hr) || !ppv || !*ppv || !isXAudioClsid) {
-        return hr;
-    }
-
-    g_self->m_version = "2.7";
-    auto *xa2 = reinterpret_cast<IXAudio2 *>(*ppv);
-    void **vtbl = *reinterpret_cast<void ***>(xa2);
-    if (!g_self->m_origCreateSourceVoice) {
-        PatchVtableEntry(vtbl, 8, &XAudio2Hook::CreateSourceVoiceHook, g_self->m_origCreateSourceVoice);
-        KRKR_LOG_INFO("IXAudio2 vtable patched via CoCreateInstance (CreateSourceVoice)");
+    if (SUCCEEDED(hr) && ppv && *ppv) {
+        if (isXAudioClsid) {
+            g_self->m_version = "2.7";
+            auto *xa2 = reinterpret_cast<IXAudio2 *>(*ppv);
+            void **vtbl = *reinterpret_cast<void ***>(xa2);
+            if (!g_self->m_origCreateSourceVoice) {
+                PatchVtableEntry(vtbl, 8, &XAudio2Hook::CreateSourceVoiceHook, g_self->m_origCreateSourceVoice);
+                KRKR_LOG_INFO("IXAudio2 vtable patched via CoCreateInstance (CreateSourceVoice)");
+            }
+        }
     }
     return hr;
 }

@@ -49,7 +49,7 @@ private:
     XAudio2Hook() = default;
     void detectVersion();
     void hookEntryPoints();
-    void ensureCreateFunction();
+    void ensureCreateFunction(bool logOnFail = true);
     void bootstrapVtable();
     void scheduleBootstrapRetries();
     void scanLoadedModules();
@@ -69,6 +69,7 @@ private:
     HANDLE m_sharedMapping = nullptr;
     SharedSettings *m_sharedView = nullptr;
     std::atomic<bool> m_warnedBootstrapOnce{false};
+    std::atomic<bool> m_warnedNoExportOnce{false};
 
     // Original functions.
     using PFN_XAudio2Create = HRESULT(WINAPI *)(IXAudio2 **ppXAudio2, UINT32 Flags, XAUDIO2_PROCESSOR XAudio2Processor);

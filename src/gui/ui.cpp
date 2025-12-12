@@ -32,6 +32,8 @@ constexpr int kSpeedEditId = 1003;
 constexpr int kApplyButtonId = 1004;
 constexpr int kStatusLabelId = 1005;
 constexpr int kLinkId = 1006;
+constexpr int kPathEditId = 1007;
+constexpr int kLaunchButtonId = 1008;
 
 struct ProcessInfo {
     std::wstring name;
@@ -43,6 +45,7 @@ struct AppState {
     float currentSpeed = 2.0f;
     float lastValidSpeed = 2.0f;
     float gateSeconds = 60.0f;
+    std::filesystem::path launchPath;
     bool enableLog = false;
     bool skipDirectSound = false;
     bool skipXAudio2 = false;
@@ -58,6 +61,7 @@ struct AppState {
 
 AppState g_state;
 static HWND g_link = nullptr;
+static ControllerOptions g_initialOptions{};
 
 enum class ProcessArch {
     Unknown,
@@ -721,6 +725,119 @@ void handleApply(HWND hwnd) {
     }
 }
 
+void handleLaunch(HWND hwnd) {
+    HWND pathEdit = GetDlgItem(hwnd, kPathEditId);
+    HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+    wchar_t pathBuf[MAX_PATH * 4] = {};
+    GetWindowTextW(pathEdit, pathBuf, static_cast<int>(std::size(pathBuf)));
+    std::filesystem::path exePath(pathBuf);
+    if (exePath.empty() || !std::filesystem::exists(exePath)) {
+        setStatus(statusLabel, L"Invalid game path");
+        return;
+    }
+    // Start suspended
+    STARTUPINFOW si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(si);
+    std::wstring cmd = L"\"" + exePath.wstring() + L"\"";
+    auto workDir = exePath.parent_path();
+    BOOL ok = CreateProcessW(exePath.c_str(), cmd.data(), nullptr, nullptr, FALSE,
+                             CREATE_SUSPENDED, nullptr,
+                             workDir.empty() ? nullptr : workDir.c_str(),
+                             &si, &pi);
+    if (!ok) {
+        setStatus(statusLabel, L"CreateProcess failed: " + std::to_wstring(GetLastError()));
+        return;
+    }
+    setStatus(statusLabel, L"Process created suspended, PID " + std::to_wstring(pi.dwProcessId));
+
+    // Determine arch of new process
+    ProcessArch targetArch = ProcessArch::Unknown;
+    std::wstring archError;
+    if (!queryProcessArch(pi.dwProcessId, targetArch, archError)) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        setStatus(statusLabel, archError);
+        return;
+    }
+
+    // Write shared settings and inject using existing flow.
+    std::wstring sharedErr;
+    const float speed = g_state.currentSpeed;
+    if (!writeSharedSettingsForPid(pi.dwProcessId, speed, true, g_state.gateSeconds, sharedErr)) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        setStatus(statusLabel, sharedErr);
+        return;
+    }
+
+    std::wstring dllPath;
+    std::wstring archErr;
+    if (!selectHookForArch(targetArch, dllPath, archErr)) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        setStatus(statusLabel, archErr);
+        return;
+    }
+
+    ProcessArch dllArch = ProcessArch::Unknown;
+    std::wstring dllArchError;
+    if (!getDllArch(dllPath, dllArch, dllArchError) || (dllArch != ProcessArch::Unknown && dllArch != targetArch)) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        setStatus(statusLabel, L"Hook DLL arch mismatch");
+        return;
+    }
+
+    std::wstring injectErr;
+    if (!injectDllIntoProcess(targetArch, pi.dwProcessId, dllPath, injectErr)) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        setStatus(statusLabel, L"Launch inject failed: " + injectErr);
+        return;
+    }
+
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    setStatus(statusLabel, L"Launched and injected: " + exePath.filename().wstring() +
+               L" (PID " + std::to_wstring(pi.dwProcessId) + L")");
+    // Refresh process list and select the new one (best-effort, 3s timeout, non-blocking UI thread).
+    std::thread([hwnd, pid = pi.dwProcessId]() {
+        const auto start = std::chrono::steady_clock::now();
+        while (true) {
+            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kRefreshButtonId, BN_CLICKED), 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count() > 3000) break;
+            // Attempt to set selection if found.
+            HWND combo = GetDlgItem(hwnd, kProcessComboId);
+            if (!combo) continue;
+            const int count = static_cast<int>(SendMessageW(combo, CB_GETCOUNT, 0, 0));
+            wchar_t item[256] = {};
+            for (int i = 0; i < count; ++i) {
+                if (SendMessageW(combo, CB_GETLBTEXT, i, reinterpret_cast<LPARAM>(item)) > 0) {
+                    // Expect format "[PID] name"
+                    if (wcsncmp(item, L"[", 1) == 0) {
+                        wchar_t *end = nullptr;
+                        DWORD listedPid = std::wcstoul(item + 1, &end, 10);
+                        if (listedPid == pid) {
+                            PostMessageW(combo, CB_SETCURSEL, i, 0);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }).detach();
+}
+
 void layoutControls(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -729,6 +846,7 @@ void layoutControls(HWND hwnd) {
     const int comboHeight = 24;
     const int editWidth = 120;
     const int buttonWidth = 120;
+    const int wideEditWidth = rc.right - labelWidth - buttonWidth - padding * 3;
     const int rowHeight = 28;
 
     int x = padding;
@@ -737,6 +855,11 @@ void layoutControls(HWND hwnd) {
     SetWindowPos(GetDlgItem(hwnd, kProcessComboId), nullptr, x + labelWidth, y, rc.right - labelWidth - buttonWidth - padding * 3,
                  comboHeight, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(hwnd, kRefreshButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
+                 SWP_NOZORDER);
+
+    y += rowHeight;
+    SetWindowPos(GetDlgItem(hwnd, kPathEditId), nullptr, x + labelWidth, y, wideEditWidth, comboHeight, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(hwnd, kLaunchButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
                  SWP_NOZORDER);
 
     y += rowHeight;
@@ -780,18 +903,28 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     switch (message) {
     case WM_CREATE: {
         CreateWindowExW(0, L"STATIC", L"Process", WS_CHILD | WS_VISIBLE, 12, 12, 90, 20, hwnd, nullptr, nullptr, nullptr);
+        RECT rcClient{};
+        GetClientRect(hwnd, &rcClient);
+        int initialWidth = rcClient.right - 200 - 120 - 12 * 3;
         HWND combo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", nullptr,
                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
-                                     90, 10, 280, 200, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProcessComboId)), nullptr, nullptr);
+                                     90, 10, initialWidth, 200, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProcessComboId)), nullptr, nullptr);
         HWND refresh = CreateWindowExW(0, L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                        0, 10, 100, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRefreshButtonId)), nullptr, nullptr);
 
-        CreateWindowExW(0, L"STATIC", L"Speed (0.5-10, suggest 0.75-2)", WS_CHILD | WS_VISIBLE, 12, 40, 220, 20, hwnd, nullptr, nullptr, nullptr);
+        CreateWindowExW(0, L"STATIC", L"Game path", WS_CHILD | WS_VISIBLE, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
+        HWND pathEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                        140, 38, initialWidth, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPathEditId)), nullptr, nullptr);
+        HWND launch = CreateWindowExW(0, L"BUTTON", L"Launch + Hook", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                      0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLaunchButtonId)), nullptr, nullptr);
+
+        CreateWindowExW(0, L"STATIC", L"Speed (suggest 0.5-2.5)", WS_CHILD | WS_VISIBLE, 12, 68, 220, 20, hwnd, nullptr, nullptr, nullptr);
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"2.00",
                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                         140, 38, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
+                                         140, 66, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
         HWND apply = CreateWindowExW(0, L"BUTTON", L"Hook + Apply", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                     0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyButtonId)), nullptr, nullptr);
+                                     0, 66, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyButtonId)), nullptr, nullptr);
 
         krkrspeed::XAudio2Hook::instance().setUserSpeed(g_state.lastValidSpeed);
         krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
@@ -822,8 +955,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND tooltip = createTooltip(hwnd);
         addTooltip(tooltip, combo, L"Select the game process to inject");
         addTooltip(tooltip, refresh, L"Refresh running processes (visible windows in this session)");
+        addTooltip(tooltip, pathEdit, L"Full path to game executable; launch suspended, inject, then resume");
+        addTooltip(tooltip, launch, L"Launch the game (suspended) and inject matching hook automatically");
         addTooltip(tooltip, speedEdit, L"Target speed (0.5-10.0x, recommended 0.75-2.0x)");
         addTooltip(tooltip, apply, L"Inject DLL and apply speed + gating settings");
+
+        if (!g_initialOptions.launchPath.empty()) {
+            SetWindowTextW(pathEdit, g_initialOptions.launchPath.c_str());
+            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kLaunchButtonId, BN_CLICKED),
+                         reinterpret_cast<LPARAM>(launch));
+        }
         break;
     }
     case WM_SIZE:
@@ -835,6 +976,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId));
         } else if (id == kApplyButtonId && HIWORD(wParam) == BN_CLICKED) {
             handleApply(hwnd);
+        } else if (id == kLaunchButtonId && HIWORD(wParam) == BN_CLICKED) {
+            handleLaunch(hwnd);
         } else if (id == kLinkId && HIWORD(wParam) == STN_CLICKED) {
             ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
         }
@@ -859,8 +1002,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
 } // namespace
 
-static ControllerOptions g_initialOptions{};
-
 void setInitialOptions(const ControllerOptions &opts) {
     g_initialOptions = opts;
     g_state.enableLog = opts.enableLog;
@@ -872,6 +1013,7 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_state.forceAll = opts.forceAll;
     g_state.bgmSeconds = opts.bgmSeconds;
     g_state.gateSeconds = opts.bgmSeconds;
+    g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
 }
 
 ControllerOptions getInitialOptions() {

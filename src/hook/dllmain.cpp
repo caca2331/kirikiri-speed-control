@@ -326,7 +326,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                     KRKR_LOG_ERROR("Init: DirectSoundHook::initialize threw an exception");
                 }
 
-
                 stage = "ldr notify";
                 // Optionally skip LdrRegisterDllNotification if requested (troubleshooting).
                 bool skipLdrNotify = false;

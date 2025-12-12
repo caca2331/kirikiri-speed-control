@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.h>
+#include <string>
 
 namespace krkrspeed::ui {
 
@@ -16,6 +17,7 @@ struct ControllerOptions {
     bool disableBgm = false;
     bool forceAll = false;
     float bgmSeconds = 60.0f;
+    std::wstring launchPath;
 };
 
 void setInitialOptions(const ControllerOptions &opts);

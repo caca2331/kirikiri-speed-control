@@ -104,7 +104,7 @@ if(WIN32)
     add_library(krkr_speed_hook SHARED
         src/hook/dllmain.cpp
     )
-    target_link_libraries(krkr_speed_hook PRIVATE krkr_hook_core)
+    target_link_libraries(krkr_speed_hook PRIVATE krkr_hook_core uuid)
     copy_soundtouch_runtime(krkr_speed_hook)
 
     if(BUILD_GUI)
@@ -112,7 +112,7 @@ if(WIN32)
             src/gui/main.cpp
             src/gui/ui.cpp
         )
-        target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32)
+        target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32 uuid)
         copy_soundtouch_runtime(KrkrSpeedController)
     endif()
 else()
