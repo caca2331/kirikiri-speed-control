@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdint>
 #include <memory>
+#include <cmath>
 #include <thread>
 #include <Psapi.h>
 
@@ -34,17 +35,29 @@ void DirectSoundHook::applySharedSettingsFallback() {
         CloseHandle(mapping);
         return;
     }
-    m_forceApply = view->forceAll != 0;
-    m_disableBgm = view->disableBgm != 0;
-    m_bgmSecondsGate = view->bgmSecondsGate;
+    const bool newForce = view->forceAll != 0;
+    const bool newDisable = view->disableBgm != 0;
+    const float newGate = view->bgmSecondsGate;
+    const std::uint32_t newStereoMode = view->stereoBgmMode;
+    const bool changed = newForce != m_forceApply || newDisable != m_disableBgm ||
+                         std::abs(newGate - m_bgmSecondsGate) > 1e-4f ||
+                         newStereoMode != m_config.stereoBgmMode;
+    m_forceApply = newForce;
+    m_disableBgm = newDisable;
+    m_bgmSecondsGate = newGate;
     m_config.forceAll = m_forceApply;
     m_config.disableBgm = m_disableBgm;
     m_config.bgmGateSeconds = m_bgmSecondsGate;
-    m_config.stereoBgmMode = view->stereoBgmMode;
-    m_seenMono.store(view->stereoBgmMode != 1); // aggressive/none treat mono as already seen
-    KRKR_LOG_INFO(std::string("DS fallback shared settings: forceAll=") + (m_forceApply ? "1" : "0") +
-                  " disableBgm=" + (m_disableBgm ? "1" : "0") +
-                  " gate=" + std::to_string(m_bgmSecondsGate));
+    m_config.stereoBgmMode = newStereoMode;
+    if (m_config.stereoBgmMode != 1) {
+        m_seenMono.store(true); // aggressive/none treat mono as already seen
+    }
+    if (changed) {
+        KRKR_LOG_INFO(std::string("DS shared settings: forceAll=") + (m_forceApply ? "1" : "0") +
+                      " disableBgm=" + (m_disableBgm ? "1" : "0") +
+                      " gate=" + std::to_string(m_bgmSecondsGate) +
+                      " stereoMode=" + std::to_string(m_config.stereoBgmMode));
+    }
     UnmapViewOfFile(view);
     CloseHandle(mapping);
 }
@@ -364,12 +377,18 @@ ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
 HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
     static bool disableDsp = false;
-    static bool useWsola = false;
     if (!m_loggedUnlockOnce.exchange(true)) {
         KRKR_LOG_INFO("DirectSound UnlockHook engaged on buffer=" +
                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
     }
     XAudio2Hook::instance().pollSharedSettings();
+    static std::chrono::steady_clock::time_point lastSharedPoll{};
+    const auto pollNow = std::chrono::steady_clock::now();
+    if (lastSharedPoll.time_since_epoch().count() == 0 ||
+        std::chrono::duration_cast<std::chrono::milliseconds>(pollNow - lastSharedPoll).count() > 1000) {
+        lastSharedPoll = pollNow;
+        applySharedSettingsFallback();
+    }
 
     // Validate pointers; fall back to passthrough if unsafe.
     auto ptrInvalid = [](LPVOID ptr, DWORD bytes) {
@@ -397,30 +416,8 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
     }
 
-    // Poll shared settings periodically to pick up forceAll toggles (Ignore BGM).
-    {
-        static HANDLE map = nullptr;
-        static SharedSettings *view = nullptr;
-        static auto lastPoll = std::chrono::steady_clock::time_point{};
-        auto nowPoll = std::chrono::steady_clock::now();
-        if (!map || std::chrono::duration_cast<std::chrono::milliseconds>(nowPoll - lastPoll).count() > 1000) {
-            lastPoll = nowPoll;
-            if (!map) {
-                const auto name = BuildSharedSettingsName(static_cast<std::uint32_t>(GetCurrentProcessId()));
-                map = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
-            }
-            if (map) {
-                if (!view) {
-                    view = static_cast<SharedSettings *>(MapViewOfFile(map, FILE_MAP_READ, 0, 0, sizeof(SharedSettings)));
-                }
-                if (view) {
-                    m_forceApply = view->forceAll != 0;
-                    m_disableBgm = view->disableBgm != 0;
-                    m_bgmSecondsGate = view->bgmSecondsGate;
-                }
-            }
-        }
-    }
+    BufferInfo *processedInfo = nullptr;
+    float processedDurationSec = 0.0f;
 
     for (int attempt = 0; attempt < 2; ++attempt) {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -458,6 +455,21 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 static_cast<float>(frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
             const float totalSec =
                 static_cast<float>(info.processedFrames + frames) / static_cast<float>(std::max<std::uint32_t>(1, info.sampleRate));
+            processedInfo = &info;
+            processedDurationSec = durationSec;
+            // Reset stream if idle gap exceeded.
+            const auto now = std::chrono::steady_clock::now();
+            if (info.lastPlayEnd.time_since_epoch().count() > 0) {
+                auto idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - info.lastPlayEnd).count();
+                if (idleMs > 200) {
+                    if (!info.cbuffer.empty()) {
+                        KRKR_LOG_DEBUG("DS: stream reset after idle gap buf=" +
+                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
+                                       " idleMs=" + std::to_string(idleMs));
+                    }
+                    info.cbuffer.clear();
+                }
+            }
             if (durationSec > 1.0f && m_fragmented.load()) {
                 m_fragmented.store(false);
                 if (!m_loggedFragmentedClear.exchange(true)) {
@@ -492,11 +504,14 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 info.currentFrequency = info.baseFrequency;
             }
             bool doDsp = false;
+            float appliedSpeed = 1.0f;
             if (!disableDsp) {
                 if (!treatAsBgm) {
                     doDsp = (!gate || totalSec <= gateSeconds);
+                    appliedSpeed = userSpeed;
                 } else if (m_forceApply) {
                     doDsp = true; // forceAll: process BGM too, ignore gate
+                    appliedSpeed = userSpeed;
                 }
             }
             if (shouldLog) {
@@ -510,110 +525,77 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                                " apply=" + (doDsp ? "1" : "0") +
                                " speed=" + std::to_string(userSpeed));
             }
-            auto padSilence = [](std::vector<std::uint8_t> &out, std::size_t targetBytes) {
-                if (out.size() >= targetBytes) return;
-                std::size_t old = out.size();
-                out.resize(targetBytes);
-                std::fill(out.begin() + old, out.end(), 0);
-            };
-
             if (doDsp) {
-                auto processTempo = [&]() {
-                    auto out = info.dsp->process(combined.data(), combined.size(), userSpeed, DspMode::Tempo);
-                    if (out.empty()) {
+                // Cap SetFrequency so target Hz never exceeds DSBFREQUENCY_MAX; use applied speed for pitch restore.
+                const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
+                const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
+                double clampedD = scaled;
+                if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
+                if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
+                const DWORD clamped = static_cast<DWORD>(clampedD);
+                if (clamped != info.currentFrequency) {
+                    self->SetFrequency(clamped);
+                    info.freqDirty = true;
+                    info.currentFrequency = clamped;
+                }
+                appliedSpeed =
+                    base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
+                float denom = appliedSpeed;
+                if (denom < 0.01f) denom = 0.01f;
+                const float pitchDown = 1.0f / denom;
+                // Build streaming input: prepend any leftover output (cbuffer) to current chunk.
+                std::vector<std::uint8_t> streamIn;
+                streamIn.reserve(info.cbuffer.size() + combined.size());
+                streamIn.insert(streamIn.end(), info.cbuffer.begin(), info.cbuffer.end());
+                streamIn.insert(streamIn.end(), combined.begin(), combined.end());
+                info.cbuffer.clear();
+
+                auto out = info.dsp->process(streamIn.data(), streamIn.size(), pitchDown, DspMode::Pitch);
+                if (out.empty()) {
+                    if (shouldLog) {
+                        KRKR_LOG_DEBUG("DS pitch-compensate produced 0 bytes; fallback passthrough buf=" +
+                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
+                    }
+                } else {
+                    // streaming buffer handling
+                    if (out.size() > combined.size()) {
+                        std::copy_n(out.data(), combined.size(), combined.begin());
+                        // store excess in cbuffer (cap to ~0.1s)
+                        size_t excess = out.size() - combined.size();
+                        info.cbuffer.insert(info.cbuffer.end(), out.data() + combined.size(), out.data() + out.size());
+                    } else if (out.size() < combined.size()) {
+                        size_t pad = combined.size() - out.size();
+                        std::fill(combined.begin(), combined.begin() + pad, 0);
+                        std::copy(out.begin(), out.end(), combined.begin() + pad);
                         if (shouldLog) {
-                            KRKR_LOG_DEBUG("DS DSP (WSOLA) produced 0 bytes; passthrough for buf=" +
+                            KRKR_LOG_DEBUG("DS DSP: zero-padded " + std::to_string(pad) +
+                                           " bytes (pitch) buf=" +
                                            std::to_string(reinterpret_cast<std::uintptr_t>(self)));
                         }
-                        return;
-                    }
-                    padSilence(out, combined.size());
-                    if (out.size() >= combined.size()) {
-                        std::copy_n(out.data(), combined.size(), combined.begin());
                     } else {
                         std::copy(out.begin(), out.end(), combined.begin());
-                        std::fill(combined.begin() + out.size(), combined.end(), 0);
+                    }
+                    // Cap cbuffer to ~0.1s
+                    const size_t bytesPerSec = std::max<std::size_t>(1, info.blockAlign * info.sampleRate);
+                    const size_t cap = std::max<std::size_t>(info.blockAlign ? info.blockAlign : 1, static_cast<size_t>(bytesPerSec * 0.1));
+                    if (info.cbuffer.size() > cap) {
+                        const size_t overflow = info.cbuffer.size() - cap;
+                        info.cbuffer.erase(info.cbuffer.begin(), info.cbuffer.begin() + overflow);
+                        KRKR_LOG_WARN("DS: cbuffer overflow trimmed overflow=" + std::to_string(overflow) +
+                                      " cap=" + std::to_string(cap) +
+                                      " buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)));
                     }
                     if (shouldLog) {
-                        KRKR_LOG_DEBUG("DS WSOLA applied: in=" + std::to_string(combined.size()) +
-                                       " out=" + std::to_string(out.size()) +
-                                       " buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                    }
-                };
-
-                if (useWsola) {
-                    processTempo();
-                } else {
-                    // Cap SetFrequency so target Hz never exceeds DSBFREQUENCY_MAX; use applied speed for pitch restore.
-                    const DWORD base = info.baseFrequency ? info.baseFrequency : info.sampleRate;
-                    const double scaled = static_cast<double>(base) * static_cast<double>(userSpeed);
-                    double clampedD = scaled;
-                    if (clampedD < static_cast<double>(DSBFREQUENCY_MIN)) clampedD = static_cast<double>(DSBFREQUENCY_MIN);
-                    if (clampedD > static_cast<double>(DSBFREQUENCY_MAX)) clampedD = static_cast<double>(DSBFREQUENCY_MAX);
-                    const DWORD clamped = static_cast<DWORD>(clampedD);
-                    if (clamped != info.currentFrequency) {
-                        self->SetFrequency(clamped);
-                        info.freqDirty = true;
-                        info.currentFrequency = clamped;
-                    }
-                    const float appliedSpeed =
-                        base > 0 ? static_cast<float>(clampedD) / static_cast<float>(base) : userSpeed;
-                    float denom = appliedSpeed;
-                    if (denom < 0.01f) denom = 0.01f;
-                    const float pitchDown = 1.0f / denom;
-                    auto processPitchWithRetry = [&](int maxAttempts) {
-                        std::vector<std::uint8_t> out;
-                        const auto &cfg = info.dsp->config();
-                        for (int attempt = 0; attempt < maxAttempts; ++attempt) {
-                            if (attempt == 0) {
-                                out = info.dsp->process(combined.data(), combined.size(), pitchDown, DspMode::Pitch);
-                            } else {
-                                DspPipeline tmp(info.sampleRate, info.channels, cfg);
-                                if (attempt == maxAttempts - 1 && durationSec < 1.0f && info.blockAlign > 0) {
-                                    std::vector<std::uint8_t> padded(combined.size() + info.blockAlign, 0);
-                                    std::memcpy(padded.data(), combined.data(), combined.size());
-                                    out = tmp.process(padded.data(), padded.size(), pitchDown, DspMode::Pitch);
-                                } else {
-                                    out = tmp.process(combined.data(), combined.size(), pitchDown, DspMode::Pitch);
-                                }
-                            }
-                            if (durationSec < 1.0f && out.size() != combined.size()) {
-                                continue; // retry once more for tiny buffers
-                            }
-                            break;
-                        }
-                        return out;
-                    };
-                    auto out = processPitchWithRetry(3);
-                    if (durationSec < 1.0f && !out.empty() && out.size() != combined.size() && shouldLog) {
-                        KRKR_LOG_DEBUG("DS pitch-compensate size mismatch after retries buf=" +
-                                       std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
-                                       " in=" + std::to_string(combined.size()) +
-                                       " out=" + std::to_string(out.size()));
-                    }
-                    if (out.empty()) {
-                        if (shouldLog) {
-                            KRKR_LOG_DEBUG("DS pitch-compensate produced 0 bytes; fallback passthrough buf=" +
-                                           std::to_string(reinterpret_cast<std::uintptr_t>(self)));
-                        }
-                    } else {
-                    padSilence(out, combined.size());
-                    if (out.size() >= combined.size()) {
-                        std::copy_n(out.data(), combined.size(), combined.begin());
-                    } else {
-                        std::copy(out.begin(), out.end(), combined.begin());
-                        std::fill(combined.begin() + out.size(), combined.end(), 0);
-                        }
-                        if (shouldLog) {
-                            KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
-                                           " target=" + std::to_string(clamped) +
-                                           " appliedSpeed=" + std::to_string(appliedSpeed) +
-                                           " pitchCompOut=" + std::to_string(out.size()));
-                        }
+                        KRKR_LOG_DEBUG("DS SetFrequency applied: base=" + std::to_string(base) +
+                                       " target=" + std::to_string(clamped) +
+                                       " appliedSpeed=" + std::to_string(appliedSpeed) +
+                                       " pitchCompOut=" + std::to_string(out.size()) +
+                                       " cbuf=" + std::to_string(info.cbuffer.size()));
                     }
                 }
             }
             info.processedFrames += frames;
+            info.lastAppliedSpeed = doDsp ? appliedSpeed : 1.0f;
             break; // processed successfully
         } else {
             // Unknown buffer: try to discover format and start tracking, then loop to process.
@@ -693,6 +675,10 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         }
     }
 
+    if (!processedInfo) {
+        return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
+    }
+
     // Write combined buffer back into the two regions.
     std::size_t cursor = 0;
     if (pAudioPtr1 && dwAudioBytes1) {
@@ -702,6 +688,12 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
     if (pAudioPtr2 && dwAudioBytes2) {
         std::memcpy(pAudioPtr2, combined.data() + cursor, dwAudioBytes2);
     }
+
+    // Track expected playback end time for stream reset heuristic.
+    float applied = processedInfo->lastAppliedSpeed > 0.01f ? processedInfo->lastAppliedSpeed : 1.0f;
+    const float playTime = processedDurationSec / applied;
+    processedInfo->lastPlayEnd = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(playTime));
 
     return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
 }

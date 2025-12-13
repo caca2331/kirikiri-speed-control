@@ -85,6 +85,9 @@ private:
         std::uint64_t processedFrames = 0;
         DWORD currentFrequency = 0;
         bool freqDirty = false;
+        std::vector<std::uint8_t> cbuffer;
+        std::chrono::steady_clock::time_point lastPlayEnd{};
+        float lastAppliedSpeed = 1.0f;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;
     std::set<std::string> m_loggedFormats;
