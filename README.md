@@ -32,7 +32,8 @@ Flags are sent to the injected hook via shared settings:
 - Most Kirikiri games are 32-bit; use the x86 controller for those.
 - If AV blocks the binaries, add an exception or temporarily disable it.
 - If the target is protected/elevated, run the controller as Administrator.
-- Default hooks: DirectSound + XAudio2 enabled; logging is off unless `--log` is passed.
+- Default hooks: DirectSound + XAudio2 + FMOD enabled; logging is off unless `--log` is passed.
+- Supported engines: Kirikiri (DirectSound/XAudio2), FMOD (Unity/Native), Wwise (Experimental).
 - BGM detection: stereo/looping buffers are treated as BGM unless you pass `--force-all`.
 
 ## Other

@@ -91,6 +91,8 @@ if(WIN32)
     add_library(krkr_hook_core STATIC
         src/hook/XAudio2Hook.cpp
         src/hook/DirectSoundHook.cpp
+        src/hook/FMODHook.cpp
+        src/hook/WwiseHook.cpp
         src/hook/HookUtils.cpp
         src/hook/ModuleScan.cpp
     )

@@ -34,6 +34,9 @@ public:
     std::vector<std::uint8_t> process(const std::uint8_t *data, std::size_t bytes, float speedRatio,
                                       DspMode mode = DspMode::Tempo);
 
+    // Process float samples (range -1.0 to 1.0).
+    std::vector<float> process(const float *data, std::size_t samples, float speedRatio, DspMode mode = DspMode::Tempo);
+
     std::uint32_t sampleRate() const { return m_sampleRate; }
     std::uint32_t channels() const { return m_channels; }
     const DspConfig &config() const { return m_config; }

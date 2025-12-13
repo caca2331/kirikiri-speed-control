@@ -1,5 +1,7 @@
 #include "XAudio2Hook.h"
 #include "DirectSoundHook.h"
+#include "FMODHook.h"
+#include "WwiseHook.h"
 #include "HookUtils.h"
 #include "../common/Logging.h"
 #include "../common/SharedSettings.h"
@@ -91,7 +93,15 @@ namespace {
                 KRKR_LOG_INFO(std::string("Captured DirectSoundCreate from newly loaded module: ") + nameAnsi);
             }
         }
-        // waveOut support removed
+
+        // FMOD
+        if (strstr(nameAnsi, "fmod") || strstr(nameAnsi, "FMOD")) {
+            krkrspeed::FMODHook::instance().initialize();
+        }
+        // Wwise
+        if (strstr(nameAnsi, "AkSoundEngine") || strstr(nameAnsi, "aksoundengine")) {
+             krkrspeed::WwiseHook::instance().initialize();
+        }
     }
 
     FARPROC WINAPI GetProcAddressHook(HMODULE module, LPCSTR procName) {
@@ -117,6 +127,18 @@ namespace {
             auto &ds = krkrspeed::DirectSoundHook::instance();
             ds.setOriginalCreate(reinterpret_cast<void *>(fn));
             return reinterpret_cast<FARPROC>(&krkrspeed::DirectSoundHook::DirectSoundCreateHook);
+        }
+        if (_stricmp(procName, "FMOD_System_PlaySound") == 0) {
+            auto &fh = krkrspeed::FMODHook::instance();
+            fh.setOriginalSystemPlaySound(reinterpret_cast<void*>(fn));
+            // Ensure FMOD functions are loaded so we can create DSPs later
+            fh.initialize();
+            return reinterpret_cast<FARPROC>(krkrspeed::FMODHook::getSystemPlaySoundHook());
+        }
+        if (_stricmp(procName, "FMOD_Channel_SetCallback") == 0) {
+            auto &fh = krkrspeed::FMODHook::instance();
+            fh.setOriginalChannelSetCallback(reinterpret_cast<void*>(fn));
+            return reinterpret_cast<FARPROC>(krkrspeed::FMODHook::getChannelSetCallbackHook());
         }
         return fn;
     }
@@ -325,6 +347,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                     krkrspeed::DirectSoundHook::instance().initialize();
                 } catch (...) {
                     KRKR_LOG_ERROR("Init: DirectSoundHook::initialize threw an exception");
+                }
+
+                stage = "fmod init";
+                KRKR_LOG_INFO("Init: starting FMODHook::initialize");
+                try {
+                    krkrspeed::FMODHook::instance().initialize();
+                } catch (...) {
+                    KRKR_LOG_ERROR("Init: FMODHook::initialize threw an exception");
+                }
+
+                stage = "wwise init";
+                KRKR_LOG_INFO("Init: starting WwiseHook::initialize");
+                try {
+                    krkrspeed::WwiseHook::instance().initialize();
+                } catch (...) {
+                    KRKR_LOG_ERROR("Init: WwiseHook::initialize threw an exception");
                 }
 
                 stage = "ldr notify";
