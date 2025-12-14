@@ -35,6 +35,7 @@ constexpr int kLinkId = 1006;
 constexpr int kPathEditId = 1007;
 constexpr int kLaunchButtonId = 1008;
 constexpr int kIgnoreBgmCheckId = 1009;
+constexpr UINT kMsgRefreshQuiet = WM_APP + 1;
 
 struct ProcessInfo {
     std::wstring name;
@@ -438,11 +439,13 @@ bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::wstring 
     return false;
 }
 
-void refreshProcessList(HWND combo, HWND statusLabel) {
+void refreshProcessList(HWND combo, HWND statusLabel, bool quiet = false) {
     g_state.processes = enumerateProcesses();
     populateProcessCombo(combo, g_state.processes);
-    std::wstring status = L"Found " + std::to_wstring(g_state.processes.size()) + L" processes";
-    setStatus(statusLabel, status);
+    if (!quiet) {
+        std::wstring status = L"Found " + std::to_wstring(g_state.processes.size()) + L" processes";
+        setStatus(statusLabel, status);
+    }
 }
 
 bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &error) {
@@ -816,7 +819,7 @@ void handleLaunch(HWND hwnd) {
     std::thread([hwnd, pid = pi.dwProcessId]() {
         const auto start = std::chrono::steady_clock::now();
         while (true) {
-            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kRefreshButtonId, BN_CLICKED), 0);
+            PostMessageW(hwnd, kMsgRefreshQuiet, 0, 0);
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count() > 3000) break;
@@ -996,6 +999,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
         }
         break;
+    }
+    case kMsgRefreshQuiet: {
+        refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId), true);
+        return 0;
     }
     case WM_NOTIFY: {
         auto *hdr = reinterpret_cast<NMHDR *>(lParam);

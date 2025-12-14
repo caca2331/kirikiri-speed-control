@@ -318,19 +318,6 @@ void FMODHook::onPlaySound(void* channel, void* sound, void* system) {
 
     if (baseFreq <= 0.0f) return;
 
-    // Set callback if not already handled by hook (e.g. game never calls SetCallback)
-    if (m_fnChannelSetCallback) {
-        // We set it via original function to avoid loop if we call hook?
-        // Hook is ChannelSetCallbackHook.
-        // We should call ORIGINAL.
-        // And we should record that there is NO original callback yet.
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            auto& info = self.m_channels[(std::uintptr_t)channel]; // Error: 'self' not avail
-        }
-    }
-    // Fix: self access
-
     std::lock_guard<std::mutex> lock(m_mutex);
     auto& info = m_channels[(std::uintptr_t)channel];
     info.baseFrequency = baseFreq;

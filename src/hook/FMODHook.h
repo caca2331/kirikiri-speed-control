@@ -19,6 +19,8 @@ public:
 
     void setOriginalSystemPlaySound(void* fn) { m_origSystemPlaySound = fn; }
     static void* getSystemPlaySoundHook();
+    void setOriginalChannelSetCallback(void* fn) { m_origChannelSetCallback = fn; }
+    static void* getChannelSetCallbackHook();
 
     // Callback helpers
     void cleanupChannel(void* channel);
@@ -64,9 +66,6 @@ private:
     // Hook implementation
     static int __stdcall SystemPlaySoundHook(void* system, void* channelgroup, void* sound, int paused, void** channel);
     static int __stdcall ChannelSetCallbackHook(void* channel, void* callback);
-
-    void setOriginalChannelSetCallback(void* fn) { m_origChannelSetCallback = fn; }
-    static void* getChannelSetCallbackHook();
 };
 
 } // namespace krkrspeed
