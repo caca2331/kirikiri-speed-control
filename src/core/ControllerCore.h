@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX 1
+#endif
+
 #include <Windows.h>
 #include <filesystem>
 #include <string>
@@ -19,7 +23,6 @@ struct ProcessInfo {
 struct SharedConfig {
     float speed = 2.0f;
     bool lengthGateEnabled = true;
-    float lengthGateSeconds = 60.0f;
     float bgmSeconds = 60.0f;
     bool enableLog = false;
     bool skipDirectSound = false;
@@ -45,6 +48,3 @@ bool launchAndInject(const std::filesystem::path &exePath, const SharedConfig &c
 std::wstring describeArch(ProcessArch arch);
 
 } // namespace krkrspeed::controller
-#ifndef NOMINMAX
-#define NOMINMAX 1
-#endif

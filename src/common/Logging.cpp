@@ -102,11 +102,17 @@ std::filesystem::path moduleDirectory() {
 
 void pruneOldLogs(const std::filesystem::path &dir) {
     std::error_code ec;
+    if (ec) return;
+    const std::vector<std::string> kKnownLogNames = {
+        "krkr_speed.log",
+        "krkr_controller.log",
+        "krkr_hook.log"
+    };
     for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
         if (ec) break;
         if (!entry.is_regular_file()) continue;
         const auto name = entry.path().filename().string();
-        if (name.rfind("krkr_", 0) == 0 && entry.path().extension() == ".log") {
+        if (std::find(kKnownLogNames.begin(), kKnownLogNames.end(), name) != kKnownLogNames.end()) {
             std::filesystem::remove(entry.path(), ec);
         }
     }

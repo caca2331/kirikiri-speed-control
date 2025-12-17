@@ -306,11 +306,6 @@ HRESULT WINAPI DirectSoundHook::UnlockHook(IDirectSoundBuffer *self, LPVOID pAud
     }
 }
 
-HRESULT WINAPI DirectSoundHook::UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
-                                            LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
-    return UnlockHook(reinterpret_cast<IDirectSoundBuffer *>(self), pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
-}
-
 ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
     auto &hook = DirectSoundHook::instance();
     if (!hook.m_origRelease) {
@@ -377,7 +372,6 @@ ULONG __stdcall DirectSoundHook::ReleaseHook(IDirectSoundBuffer *self) {
 
 HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
                                       LPVOID pAudioPtr2, DWORD dwAudioBytes2) {
-    static bool disableDsp = false;
     if (!m_loggedUnlockOnce.exchange(true)) {
         KRKR_LOG_INFO("DirectSound UnlockHook engaged on buffer=" +
                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
@@ -472,7 +466,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                     KRKR_LOG_INFO("DS: detected non-fragmented audio (>1s chunk); disabling tiny-chunk skip");
                 }
             }
-            const bool tooShort = false; // short-guard disabled per request
             const bool stereoIsBgm = (m_config.stereoBgmMode == 0) ||
                                      (m_config.stereoBgmMode == 1 && m_seenMono.load());
             const bool passLengthGate = totalSec > m_bgmSecondsGate;
@@ -500,14 +493,12 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
             }
             bool doDsp = false;
             float appliedSpeed = 1.0f;
-            if (!disableDsp) {
-                if (!treatAsBgm) {
-                    doDsp = (!gate || totalSec <= gateSeconds);
-                    appliedSpeed = userSpeed;
-                } else if (m_forceApply) {
-                    doDsp = true; 
-                    appliedSpeed = userSpeed;
-                }
+            if (!treatAsBgm) {
+                doDsp = (!gate || totalSec <= gateSeconds);
+                appliedSpeed = userSpeed;
+            } else if (m_forceApply) {
+                doDsp = true;
+                appliedSpeed = userSpeed;
             }
             if (shouldLog) {
                 KRKR_LOG_DEBUG("DS Unlock: buf=" + std::to_string(reinterpret_cast<std::uintptr_t>(self)) +
@@ -645,7 +636,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
 
     // Track expected playback end time for stream reset heuristic.
     const float applied = lastAppliedSpeedForPlay > 0.01f ? lastAppliedSpeedForPlay : 1.0f;
-    const float playTime = processedDurationSec / applied;
     if (processedInfo->stream) {
         processedInfo->stream->recordPlaybackEnd(processedDurationSec, applied);
     }
@@ -655,10 +645,6 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
 
 void DirectSoundHook::patchDeviceVtable(IDirectSound8 *ds8) {
     if (!ds8) return;
-    if (m_disableVtablePatch) {
-        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping device vtable patch");
-        return;
-    }
     std::lock_guard<std::mutex> lock(m_vtableMutex);
     if (m_deviceVtables.find(ds8) != m_deviceVtables.end()) {
         return;
@@ -682,10 +668,6 @@ void DirectSoundHook::patchDeviceVtable(IDirectSound8 *ds8) {
 
 void DirectSoundHook::patchBufferVtable(IDirectSoundBuffer *buf) {
     if (!buf) return;
-    if (m_disableVtablePatch) {
-        KRKR_LOG_INFO("KRKR_DS_DISABLE_VTABLE set; skipping buffer vtable patch");
-        return;
-    }
     std::lock_guard<std::mutex> lock(m_vtableMutex);
     if (m_bufferVtables.find(buf) != m_bufferVtables.end()) {
         return;

@@ -93,7 +93,6 @@ if(WIN32)
         src/hook/FMODHook.cpp
         src/hook/WwiseHook.cpp
         src/hook/HookUtils.cpp
-        src/hook/ModuleScan.cpp
     )
     target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound xaudio2 dxguid winmm)
     target_include_directories(krkr_hook_core PUBLIC src)

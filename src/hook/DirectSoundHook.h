@@ -46,8 +46,6 @@ public:
                                                 LPCDSBUFFERDESC pcDSBufferDesc);
     static HRESULT WINAPI UnlockHook(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1, LPVOID pAudioPtr2,
                                      DWORD dwAudioBytes2);
-    static HRESULT WINAPI UnlockHook8(IDirectSoundBuffer8 *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
-                                      LPVOID pAudioPtr2, DWORD dwAudioBytes2);
     static ULONG __stdcall ReleaseHook(IDirectSoundBuffer *self);
 
     __declspec(noinline) HRESULT handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr1, DWORD dwAudioBytes1,
@@ -96,7 +94,6 @@ private:
     std::unordered_map<void *, std::vector<void *>> m_bufferVtables;
     std::atomic<bool> m_loggedUnlockOnce{false};
     std::atomic<bool> m_disableAfterFault{false};
-    bool m_disableVtablePatch = false; // retained for safety; no env toggle now
     bool m_disableBgm = false;
     bool m_forceApply = false;
     float m_bgmSecondsGate = 60.0f;

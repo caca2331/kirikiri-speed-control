@@ -103,20 +103,4 @@ configure_and_build("x86" "${BUILD_X86}" "x86-windows" "Win32")
 stage("x64" "${BUILD_X64}" "${DIST_DIR}/x64" "x64-windows")
 stage("x86" "${BUILD_X86}" "${DIST_DIR}/x86" "x86-windows")
 
-# Clean legacy cmd shortcut and create a Windows .lnk shortcut to x86 controller.
-file(REMOVE "${DIST_DIR}/KrkrSpeedController_x86.cmd")
-execute_process(
-    COMMAND powershell -NoLogo -NoProfile -Command
-        "$ws=New-Object -ComObject WScript.Shell;"
-        "$sc=$ws.CreateShortcut('${DIST_DIR}/KrkrSpeedController_x86.lnk');"
-        "$sc.TargetPath='${DIST_DIR}/x86/KrkrSpeedController.exe';"
-        "$sc.WorkingDirectory='${DIST_DIR}/x86';"
-        "$sc.IconLocation='${DIST_DIR}/x86/KrkrSpeedController.exe,0';"
-        "$sc.Save();"
-    RESULT_VARIABLE shortcut_r
-)
-if(NOT shortcut_r EQUAL 0)
-    message(WARNING "Failed to create KrkrSpeedController_x86.lnk (result ${shortcut_r})")
-endif()
-
 message(STATUS "Dual-arch staging complete: ${DIST_DIR}/x64 and ${DIST_DIR}/x86")

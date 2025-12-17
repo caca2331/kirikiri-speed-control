@@ -6,8 +6,6 @@
 #include "ControllerCore.h"
 
 #include "../common/Logging.h"
-#include "../hook/XAudio2Hook.h"
-
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <algorithm>
@@ -41,7 +39,6 @@ struct AppState {
     std::vector<ProcessInfo> processes;
     float currentSpeed = 2.0f;
     float lastValidSpeed = 2.0f;
-    float gateSeconds = 60.0f;
     std::filesystem::path launchPath;
     bool enableLog = false;
     bool skipDirectSound = false;
@@ -50,7 +47,7 @@ struct AppState {
     bool skipWwise = false;
     bool safeMode = false;
     bool processAllAudio = false;
-    float bgmSeconds = 60.0f;
+    float bgmSeconds = 60.0f; // also used as length gate seconds
     std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
     std::uint32_t stereoBgmMode = 1;
 };
@@ -163,9 +160,6 @@ void handleApply(HWND hwnd) {
     g_state.currentSpeed = speed;
     g_state.processAllAudio = (ignoreBgm && SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
-    krkrspeed::XAudio2Hook::instance().setUserSpeed(speed);
-    krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
-
     const int index = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
     if (index < 0 || index >= static_cast<int>(g_state.processes.size())) {
         setStatus(statusLabel, L"Select a process to hook first.");
@@ -184,7 +178,6 @@ void handleApply(HWND hwnd) {
     controller::SharedConfig cfg{};
     cfg.speed = speed;
     cfg.lengthGateEnabled = true;
-    cfg.lengthGateSeconds = g_state.gateSeconds;
     cfg.enableLog = g_state.enableLog;
     cfg.skipDirectSound = g_state.skipDirectSound;
     cfg.skipXAudio2 = g_state.skipXAudio2;
@@ -225,7 +218,7 @@ void handleApply(HWND hwnd) {
     if (controller::injectDllIntoProcess(targetArch, proc.pid, dllPath, error)) {
         wchar_t message[160] = {};
         swprintf_s(message, L"Injected into %s (PID %u) at %.2fx; gate on @ %.2fs",
-                   proc.name.c_str(), proc.pid, speed, g_state.gateSeconds);
+                   proc.name.c_str(), proc.pid, speed, g_state.bgmSeconds);
         setStatus(statusLabel, message);
     } else {
         const controller::ProcessArch selfArch = controller::getSelfArch();
@@ -244,7 +237,6 @@ void handleLaunch(HWND hwnd) {
     controller::SharedConfig cfg{};
     cfg.speed = g_state.currentSpeed;
     cfg.lengthGateEnabled = true;
-    cfg.lengthGateSeconds = g_state.gateSeconds;
     cfg.enableLog = g_state.enableLog;
     cfg.skipDirectSound = g_state.skipDirectSound;
     cfg.skipXAudio2 = g_state.skipXAudio2;
@@ -402,9 +394,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND apply = CreateWindowExW(0, L"BUTTON", L"Hook + Apply", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      0, 66, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kApplyButtonId)), nullptr, nullptr);
 
-        krkrspeed::XAudio2Hook::instance().setUserSpeed(g_state.lastValidSpeed);
-        krkrspeed::XAudio2Hook::instance().configureLengthGate(true, g_state.gateSeconds);
-
         CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE,
                         12, 96, 400, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
 
@@ -492,7 +481,6 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_state.safeMode = opts.safeMode;
     g_state.processAllAudio = opts.processAllAudio;
     g_state.bgmSeconds = opts.bgmSeconds;
-    g_state.gateSeconds = opts.bgmSeconds;
     g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
     g_state.stereoBgmMode = opts.stereoBgmMode;
 }

@@ -399,7 +399,7 @@ bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstri
 
     SharedSettings settings{};
     settings.userSpeed = config.speed;
-    settings.lengthGateSeconds = std::clamp(config.lengthGateSeconds, 0.1f, 600.0f);
+    settings.lengthGateSeconds = std::clamp(config.bgmSeconds, 0.1f, 600.0f);
     settings.lengthGateEnabled = config.lengthGateEnabled ? 1u : 0u;
     settings.enableLog = config.enableLog ? 1u : 0u;
     settings.skipDirectSound = config.skipDirectSound ? 1u : 0u;
@@ -407,12 +407,10 @@ bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstri
     settings.skipFmod = config.skipFmod ? 1u : 0u;
     settings.skipWwise = config.skipWwise ? 1u : 0u;
     settings.safeMode = config.safeMode ? 1u : 0u;
-    settings.disableVeh = 0;
     settings.disableBgm = 0;
     settings.processAllAudio = config.processAllAudio ? 1u : 0u;
     settings.bgmSecondsGate = std::clamp(config.bgmSeconds, 0.1f, 600.0f);
     settings.stereoBgmMode = config.stereoBgmMode;
-    settings.version = 2;
     *view = settings;
 
     UnmapViewOfFile(view);

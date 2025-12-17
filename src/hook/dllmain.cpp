@@ -43,13 +43,6 @@ namespace {
     PVOID g_dllNotifyCookie = nullptr;
     PVOID g_vectored = nullptr;
 
-    bool EnvFlagOn(const wchar_t *name) {
-        wchar_t buf[8] = {};
-        DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
-        if (n == 0 || n >= std::size(buf)) return false;
-        return wcscmp(buf, L"1") == 0;
-    }
-
     LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS *info) {
         static std::atomic<int> logged{0};
         if (!info || !info->ExceptionRecord) {
@@ -231,86 +224,75 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 const bool skipDs = haveShared ? (shared.skipDirectSound != 0) : false;
                 const bool skipFmod = haveShared ? (shared.skipFmod != 0) : false;
                 const bool skipWwise = haveShared ? (shared.skipWwise != 0) : false;
-                const bool skipImports = false;
-
-                if (skipImports) {
-                    KRKR_LOG_INFO("Import patching disabled by config");
+                stage = "patch GetProcAddress";
+                if (krkrspeed::PatchImport("kernel32.dll", "GetProcAddress",
+                                           reinterpret_cast<void *>(&GetProcAddressHook),
+                                           reinterpret_cast<void **>(&g_origGetProcAddress))) {
+                    KRKR_LOG_INFO("Patched GetProcAddress import to catch dynamic audio API resolution");
                 } else {
-                    stage = "patch GetProcAddress";
-                    if (krkrspeed::PatchImport("kernel32.dll", "GetProcAddress",
-                                               reinterpret_cast<void *>(&GetProcAddressHook),
-                                               reinterpret_cast<void **>(&g_origGetProcAddress))) {
-                        KRKR_LOG_INFO("Patched GetProcAddress import to catch dynamic audio API resolution");
-                    } else {
-                        KRKR_LOG_WARN("Failed to patch GetProcAddress; dynamic API resolution may bypass hooks");
-                    }
-                    stage = "patch LoadLibraryA";
-                    if (krkrspeed::PatchImport("kernel32.dll", "LoadLibraryA",
-                                               reinterpret_cast<void *>(&LoadLibraryAHook),
-                                               reinterpret_cast<void **>(&g_origLoadLibraryA))) {
-                        KRKR_LOG_INFO("Patched LoadLibraryA to capture late XAudio2/DirectSound loads");
-                    } else {
-                        KRKR_LOG_WARN("Failed to patch LoadLibraryA; late-load modules may be missed");
-                    }
-                    stage = "patch LoadLibraryW";
-                    if (krkrspeed::PatchImport("kernel32.dll", "LoadLibraryW",
-                                               reinterpret_cast<void *>(&LoadLibraryWHook),
-                                               reinterpret_cast<void **>(&g_origLoadLibraryW))) {
-                        KRKR_LOG_INFO("Patched LoadLibraryW to capture late XAudio2/DirectSound loads");
-                    } else {
-                        KRKR_LOG_WARN("Failed to patch LoadLibraryW; late-load modules may be missed");
-                    }
-                    stage = "patch kernelbase LoadLibrary*";
-                    krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryW",
-                                           reinterpret_cast<void *>(&LoadLibraryWHook),
-                                           reinterpret_cast<void **>(&g_origLoadLibraryW));
-                    krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryA",
-                                           reinterpret_cast<void *>(&LoadLibraryAHook),
-                                           reinterpret_cast<void **>(&g_origLoadLibraryA));
-                    krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryExW",
-                                           reinterpret_cast<void *>(&LoadLibraryExWHook),
-                                           reinterpret_cast<void **>(&g_origLoadLibraryExW));
-                    krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryExA",
-                                           reinterpret_cast<void *>(&LoadLibraryExAHook),
-                                           reinterpret_cast<void **>(&g_origLoadLibraryExA));
-                    krkrspeed::PatchImport("kernel32.dll", "LoadLibraryExW",
-                                           reinterpret_cast<void *>(&LoadLibraryExWHook),
-                                           reinterpret_cast<void **>(&g_origLoadLibraryExW));
-                    krkrspeed::PatchImport("kernel32.dll", "LoadLibraryExA",
-                                           reinterpret_cast<void *>(&LoadLibraryExAHook),
-                                           reinterpret_cast<void **>(&g_origLoadLibraryExA));
+                    KRKR_LOG_WARN("Failed to patch GetProcAddress; dynamic API resolution may bypass hooks");
                 }
+                stage = "patch LoadLibraryA";
+                if (krkrspeed::PatchImport("kernel32.dll", "LoadLibraryA",
+                                           reinterpret_cast<void *>(&LoadLibraryAHook),
+                                           reinterpret_cast<void **>(&g_origLoadLibraryA))) {
+                    KRKR_LOG_INFO("Patched LoadLibraryA to capture late XAudio2/DirectSound loads");
+                } else {
+                    KRKR_LOG_WARN("Failed to patch LoadLibraryA; late-load modules may be missed");
+                }
+                stage = "patch LoadLibraryW";
+                if (krkrspeed::PatchImport("kernel32.dll", "LoadLibraryW",
+                                           reinterpret_cast<void *>(&LoadLibraryWHook),
+                                           reinterpret_cast<void **>(&g_origLoadLibraryW))) {
+                    KRKR_LOG_INFO("Patched LoadLibraryW to capture late XAudio2/DirectSound loads");
+                } else {
+                    KRKR_LOG_WARN("Failed to patch LoadLibraryW; late-load modules may be missed");
+                }
+                stage = "patch kernelbase LoadLibrary*";
+                krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryW",
+                                       reinterpret_cast<void *>(&LoadLibraryWHook),
+                                       reinterpret_cast<void **>(&g_origLoadLibraryW));
+                krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryA",
+                                       reinterpret_cast<void *>(&LoadLibraryAHook),
+                                       reinterpret_cast<void **>(&g_origLoadLibraryA));
+                krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryExW",
+                                       reinterpret_cast<void *>(&LoadLibraryExWHook),
+                                       reinterpret_cast<void **>(&g_origLoadLibraryExW));
+                krkrspeed::PatchImport("kernelbase.dll", "LoadLibraryExA",
+                                       reinterpret_cast<void *>(&LoadLibraryExAHook),
+                                       reinterpret_cast<void **>(&g_origLoadLibraryExA));
+                krkrspeed::PatchImport("kernel32.dll", "LoadLibraryExW",
+                                       reinterpret_cast<void *>(&LoadLibraryExWHook),
+                                       reinterpret_cast<void **>(&g_origLoadLibraryExW));
+                krkrspeed::PatchImport("kernel32.dll", "LoadLibraryExA",
+                                       reinterpret_cast<void *>(&LoadLibraryExAHook),
+                                       reinterpret_cast<void **>(&g_origLoadLibraryExA));
 
                 stage = "vectored handler";
                 // Lightweight crash breadcrumbs: log first few exceptions with addresses (can be disabled).
                 g_vectored = AddVectoredExceptionHandler(TRUE, VectoredHandler);
 
                 stage = "module dump";
-                const bool skipDump = false;
-                if (skipDump) {
-                    KRKR_LOG_INFO("Module dump skipped by config");
-                } else {
-                    try {
-                        // Dump loaded module names for diagnostics.
-                        HMODULE mods[256];
-                        DWORD needed = 0;
-                        if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
-                            size_t count = std::min<std::size_t>(needed / sizeof(HMODULE), std::size(mods));
-                            std::string msg = "Modules:";
-                            char name[MAX_PATH] = {};
-                            for (size_t i = 0; i < count; ++i) {
-                                if (GetModuleBaseNameA(GetCurrentProcess(), mods[i], name, static_cast<DWORD>(std::size(name))) != 0) {
-                                    msg += " ";
-                                    msg += name;
-                                }
+                try {
+                    // Dump loaded module names for diagnostics.
+                    HMODULE mods[256];
+                    DWORD needed = 0;
+                    if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
+                        size_t count = std::min<std::size_t>(needed / sizeof(HMODULE), std::size(mods));
+                        std::string msg = "Modules:";
+                        char name[MAX_PATH] = {};
+                        for (size_t i = 0; i < count; ++i) {
+                            if (GetModuleBaseNameA(GetCurrentProcess(), mods[i], name, static_cast<DWORD>(std::size(name))) != 0) {
+                                msg += " ";
+                                msg += name;
                             }
-                            KRKR_LOG_INFO(msg);
-                        } else {
-                            KRKR_LOG_WARN("EnumProcessModules failed; skipping module dump");
                         }
-                    } catch (...) {
-                        KRKR_LOG_ERROR("Init: module dump threw an exception; continuing");
+                        KRKR_LOG_INFO(msg);
+                    } else {
+                        KRKR_LOG_WARN("EnumProcessModules failed; skipping module dump");
                     }
+                } catch (...) {
+                    KRKR_LOG_ERROR("Init: module dump threw an exception; continuing");
                 }
 
                 stage = "xaudio2 init";
@@ -372,38 +354,32 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
 
                 stage = "ldr notify";
                 // Optionally skip LdrRegisterDllNotification if requested (troubleshooting).
-                bool skipLdrNotify = false;
-
-                if (!skipLdrNotify) {
-                    KRKR_LOG_INFO("Init: registering LdrRegisterDllNotification");
-                    try {
-                        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-                        auto reg = reinterpret_cast<PFN_LdrRegisterDllNotification>(
-                            GetProcAddress(ntdll, "LdrRegisterDllNotification"));
-                        if (reg) {
-                            NTSTATUS st = reg(0, [](ULONG reason, const KRKR_LDR_DLL_NOTIFICATION_DATA *data, PVOID) {
-                                if (reason != 1 || !data || !data->Loaded.FullDllName || !data->Loaded.FullDllName->Buffer) return;
-                                const auto *full = data->Loaded.FullDllName;
-                                std::wstring wname(full->Buffer, full->Length / sizeof(wchar_t));
-                                if (!wname.empty()) {
-                                    char name[260] = {};
-                                    WideCharToMultiByte(CP_ACP, 0, wname.c_str(), -1, name, static_cast<int>(std::size(name)), nullptr, nullptr);
-                                    OnLibraryLoaded(reinterpret_cast<HMODULE>(data->Loaded.DllBase), name);
-                                }
-                            }, nullptr, &g_dllNotifyCookie);
-                            if (st != 0) {
-                                KRKR_LOG_WARN("LdrRegisterDllNotification returned status " + std::to_string(st));
-                            } else {
-                                KRKR_LOG_INFO("Init: LdrRegisterDllNotification registered");
+                KRKR_LOG_INFO("Init: registering LdrRegisterDllNotification");
+                try {
+                    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+                    auto reg = reinterpret_cast<PFN_LdrRegisterDllNotification>(
+                        GetProcAddress(ntdll, "LdrRegisterDllNotification"));
+                    if (reg) {
+                        NTSTATUS st = reg(0, [](ULONG reason, const KRKR_LDR_DLL_NOTIFICATION_DATA *data, PVOID) {
+                            if (reason != 1 || !data || !data->Loaded.FullDllName || !data->Loaded.FullDllName->Buffer) return;
+                            const auto *full = data->Loaded.FullDllName;
+                            std::wstring wname(full->Buffer, full->Length / sizeof(wchar_t));
+                            if (!wname.empty()) {
+                                char name[260] = {};
+                                WideCharToMultiByte(CP_ACP, 0, wname.c_str(), -1, name, static_cast<int>(std::size(name)), nullptr, nullptr);
+                                OnLibraryLoaded(reinterpret_cast<HMODULE>(data->Loaded.DllBase), name);
                             }
+                        }, nullptr, &g_dllNotifyCookie);
+                        if (st != 0) {
+                            KRKR_LOG_WARN("LdrRegisterDllNotification returned status " + std::to_string(st));
                         } else {
-                            KRKR_LOG_WARN("Init: LdrRegisterDllNotification not found");
+                            KRKR_LOG_INFO("Init: LdrRegisterDllNotification registered");
                         }
-                    } catch (...) {
-                        KRKR_LOG_ERROR("Init: LdrRegisterDllNotification threw an exception");
+                    } else {
+                        KRKR_LOG_WARN("Init: LdrRegisterDllNotification not found");
                     }
-                } else {
-                    KRKR_LOG_INFO("KRKR_SKIP_LDR_NOTIFY set; skipping LdrRegisterDllNotification");
+                } catch (...) {
+                    KRKR_LOG_ERROR("Init: LdrRegisterDllNotification threw an exception");
                 }
 
                 stage = "done";
