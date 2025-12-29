@@ -12,10 +12,12 @@ cmake --build build --config Release --target dist_dual_arch
 `dist_dual_arch` configures/builds `build.x64` and `build.x86`, then stages:
 ```
 dist/
-  x64/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
-  x86/ KrkrSpeedController.exe, krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
+  KrkrSpeedController/
+    KrkrSpeedController.exe, SoundTouch.dll
+    x86/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
+    x64/ krkr_injector.exe, krkr_speed_hook.dll, SoundTouch.dll
 ```
-Either controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the sibling dist folder.
+The x86 controller can inject into both x86 and x64 games: it spawns the injector that matches the target process and uses the matching hook DLL from the arch subfolder.
 
 ## Usage
 - Launch `KrkrSpeedController.exe`.
@@ -28,7 +30,7 @@ Either controller can inject into both x86 and x64 games: it spawns the injector
 
 ### Controller CLI options
 - `--log` / `--enable-log` : enable logging for controller + hook.
-- `--log-dir <path>` : override log output directory (default: beside the controller).
+- `--log-dir <path>` : override log output directory (default: beside the controller, `dist/KrkrSpeedController`).
 - `--mark-stereo-bgm <aggressive|hybrid|none>` : stereo→BGM heuristic (default `hybrid`). In many games voices are mono and BGMs are stereo. Major way to label bgm.
 - `--bgm-secs <seconds>` : BGM length gate (default 60s); longer buffers treated as BGM. Secondary way to label bgm.
 - `--process-all-audio` : speed up all audios including BGM.

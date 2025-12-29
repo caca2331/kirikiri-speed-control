@@ -1,13 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
 # This script configures + builds both x64 and x86 variants and stages
-# the deliverables into dist/x64 and dist/x86.
+# the deliverables into dist/KrkrSpeedController (x86 controller + arch folders).
 
 set(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/..")
 file(REAL_PATH "${SOURCE_DIR}" SOURCE_DIR)
 set(BUILD_X64 "${SOURCE_DIR}/build.x64")
 set(BUILD_X86 "${SOURCE_DIR}/build.x86")
 set(DIST_DIR "${SOURCE_DIR}/dist")
+set(DIST_ROOT "${DIST_DIR}/KrkrSpeedController")
 set(CONFIG "Release")
 
 function(configure_and_build name build_dir arch_triplet arch_flag)
@@ -60,12 +61,7 @@ endfunction()
 function(stage name build_dir dist_dir triplet)
     set(bin_dir "${build_dir}/${CONFIG}")
     file(MAKE_DIRECTORY "${dist_dir}")
-    set(files
-        KrkrSpeedController.exe
-        krkr_injector.exe
-        krkr_speed_hook.dll
-        SoundTouch.dll
-    )
+    set(files ${ARGN})
     foreach(f IN LISTS files)
         set(src "${bin_dir}/${f}")
         if(NOT EXISTS "${src}")
@@ -97,10 +93,32 @@ function(stage name build_dir dist_dir triplet)
     endforeach()
 endfunction()
 
+function(remove_stale_controller dist_dir)
+    set(stale "${dist_dir}/KrkrSpeedController.exe")
+    if(EXISTS "${stale}")
+        file(REMOVE "${stale}")
+        message(STATUS "Removed stale controller at ${stale}")
+    endif()
+endfunction()
+
 configure_and_build("x64" "${BUILD_X64}" "x64-windows" "x64")
 configure_and_build("x86" "${BUILD_X86}" "x86-windows" "Win32")
 
-stage("x64" "${BUILD_X64}" "${DIST_DIR}/x64" "x64-windows")
-stage("x86" "${BUILD_X86}" "${DIST_DIR}/x86" "x86-windows")
+stage("x86-controller" "${BUILD_X86}" "${DIST_ROOT}" "x86-windows"
+      KrkrSpeedController.exe
+      SoundTouch.dll
+)
+stage("x86" "${BUILD_X86}" "${DIST_ROOT}/x86" "x86-windows"
+      krkr_injector.exe
+      krkr_speed_hook.dll
+      SoundTouch.dll
+)
+stage("x64" "${BUILD_X64}" "${DIST_ROOT}/x64" "x64-windows"
+      krkr_injector.exe
+      krkr_speed_hook.dll
+      SoundTouch.dll
+)
+remove_stale_controller("${DIST_ROOT}/x86")
+remove_stale_controller("${DIST_ROOT}/x64")
 
-message(STATUS "Dual-arch staging complete: ${DIST_DIR}/x64 and ${DIST_DIR}/x86")
+message(STATUS "Dual-arch staging complete: ${DIST_ROOT} (controller) with ${DIST_ROOT}/x86 and ${DIST_ROOT}/x64")

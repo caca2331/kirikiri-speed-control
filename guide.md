@@ -1,6 +1,6 @@
 # Universal Kirikiri Voice Speed Controller – Implementation Guide (Dec 2025)
 
-This guide is the “how it works” document for re‑implementing the controller and hooks. It reflects the **current, tested logic**—DirectSound is the reference path; other hooks should mirror it (Unity titles included).
+This guide is the “how it works” document for understanding, implementing, and re‑implementing the controller and hooks. It reflects the **current, tested logic**—DirectSound is the reference path; other hooks should mirror it (Unity titles included).
 
 ## 1. Objective
 - Inject a DLL into target games and time‑stretch **speech** to match game speed (0.5×–2.0×) without pitch distortion and with minimal latency (<100 ms).

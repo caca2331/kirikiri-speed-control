@@ -21,5 +21,5 @@ draft.md is for my own purpose. ignore it.
 
 ## Rules for this project
 - (First time only) Make sure you read all files in src and cmake folder.
-- For this project, log files should be located in ./dist/x86/ or ./dist/x64
+- For this project, log files should be located in ./dist/KrkrSpeedController/ (controller root) by default
 - It could be hard for you to fully detect the result. The interaction would be: I give you instructions -> you think deeply, check for information (look at log, code, online resources/documentations, etc.), then ask for clarification if any -> I answer -> You start coding, make the executable and stage if there's code change, finally tell me what you did (not detail, but the key summary) and instruct me how to test. (during which, follow AGENTS.md) -> I run test, generate log file, give you instructions.
