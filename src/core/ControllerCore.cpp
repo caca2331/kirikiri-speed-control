@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <unordered_map>
 #include <mutex>
+#include <cmath>
+#include <cwchar>
 
 namespace krkrspeed::controller {
 namespace {
@@ -147,6 +149,91 @@ std::wstring describeArch(ProcessArch arch) {
     case ProcessArch::Arm64: return L"ARM64";
     default: return L"unknown";
     }
+}
+
+float clampSpeed(float speed) {
+    return std::clamp(speed, 0.5f, 10.0f);
+}
+
+float roundSpeed(float speed) {
+    return std::round(speed * 100.0f) / 100.0f;
+}
+
+float effectiveSpeed(const SpeedControlState &state) {
+    return state.enabled ? state.currentSpeed : 1.0f;
+}
+
+std::wstring formatSpeed(float speed) {
+    wchar_t buf[32] = {};
+    swprintf_s(buf, L"%.2f", speed);
+    return std::wstring(buf);
+}
+
+void initSpeedState(SpeedControlState &state, float speed, bool enabled) {
+    state.enabled = enabled;
+    const float clamped = clampSpeed(speed);
+    state.currentSpeed = clamped;
+    state.lastValidSpeed = clamped;
+}
+
+void updateSpeedFromInput(SpeedControlState &state, float speed) {
+    const float clamped = clampSpeed(speed);
+    state.currentSpeed = clamped;
+    state.lastValidSpeed = clamped;
+}
+
+bool applySpeedToPid(DWORD pid, const SharedConfig &baseConfig, const SpeedControlState &state, std::wstring &error) {
+    if (pid == 0) {
+        error = L"Invalid PID";
+        return false;
+    }
+    SharedConfig cfg = baseConfig;
+    cfg.speed = effectiveSpeed(state);
+    return writeSharedSettingsForPid(pid, cfg, error);
+}
+
+bool applySpeedHotkey(DWORD pid, const SharedConfig &baseConfig, SpeedControlState &state,
+                      SpeedHotkeyAction action, std::wstring &status, std::wstring &error) {
+    auto setSpeed = [&](float speed) {
+        updateSpeedFromInput(state, roundSpeed(speed));
+    };
+
+    switch (action) {
+    case SpeedHotkeyAction::Toggle:
+        state.enabled = !state.enabled;
+        if (state.enabled) {
+            status = L"Speed ON: " + formatSpeed(state.currentSpeed) + L"x";
+        } else {
+            status = L"Speed OFF (target " + formatSpeed(state.currentSpeed) + L"x)";
+        }
+        break;
+    case SpeedHotkeyAction::SpeedUp:
+        if (!state.enabled) {
+            state.enabled = true;
+            setSpeed(1.1f);
+        } else {
+            setSpeed(state.currentSpeed + 0.1f);
+        }
+        status = L"Speed set to " + formatSpeed(state.currentSpeed) + L"x";
+        break;
+    case SpeedHotkeyAction::SpeedDown:
+        if (!state.enabled) {
+            state.enabled = true;
+            setSpeed(0.9f);
+        } else {
+            setSpeed(state.currentSpeed - 0.1f);
+        }
+        status = L"Speed set to " + formatSpeed(state.currentSpeed) + L"x";
+        break;
+    default:
+        error = L"Unknown hotkey action";
+        return false;
+    }
+
+    if (!applySpeedToPid(pid, baseConfig, state, error)) {
+        return false;
+    }
+    return true;
 }
 
 bool ensureDebugPrivilege() {

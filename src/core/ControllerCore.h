@@ -34,6 +34,18 @@ struct SharedConfig {
     std::uint32_t stereoBgmMode = 1;
 };
 
+struct SpeedControlState {
+    float currentSpeed = 1.5f;
+    float lastValidSpeed = 1.5f;
+    bool enabled = true;
+};
+
+enum class SpeedHotkeyAction {
+    Toggle,
+    SpeedUp,
+    SpeedDown
+};
+
 ProcessArch getSelfArch();
 bool ensureDebugPrivilege();
 std::filesystem::path controllerDirectory();
@@ -46,5 +58,14 @@ bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstri
 bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::filesystem::path &dllPath, std::wstring &error);
 bool launchAndInject(const std::filesystem::path &exePath, const SharedConfig &config, DWORD &outPid, std::wstring &error);
 std::wstring describeArch(ProcessArch arch);
+
+float clampSpeed(float speed);
+float roundSpeed(float speed);
+float effectiveSpeed(const SpeedControlState &state);
+void initSpeedState(SpeedControlState &state, float speed, bool enabled = true);
+void updateSpeedFromInput(SpeedControlState &state, float speed);
+bool applySpeedToPid(DWORD pid, const SharedConfig &baseConfig, const SpeedControlState &state, std::wstring &error);
+bool applySpeedHotkey(DWORD pid, const SharedConfig &baseConfig, SpeedControlState &state,
+                      SpeedHotkeyAction action, std::wstring &status, std::wstring &error);
 
 } // namespace krkrspeed::controller

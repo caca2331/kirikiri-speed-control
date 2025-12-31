@@ -9,7 +9,6 @@
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <algorithm>
-#include <cmath>
 #include <cwchar>
 #include <cwctype>
 #include <filesystem>
@@ -33,14 +32,19 @@ constexpr int kLaunchButtonId = 1008;
 constexpr int kIgnoreBgmCheckId = 1009;
 constexpr int kIgnoreBgmLabelId = 1010;
 constexpr UINT kMsgRefreshQuiet = WM_APP + 1;
+constexpr int kHotkeyToggleSpeedId = 2001;
+constexpr int kHotkeySpeedUpId = 2002;
+constexpr int kHotkeySpeedDownId = 2003;
+constexpr UINT kHotkeyModifiers = MOD_ALT;
 
 using controller::ProcessArch;
 using controller::ProcessInfo;
+using controller::SpeedControlState;
+using controller::SpeedHotkeyAction;
 
 struct AppState {
     std::vector<ProcessInfo> processes;
-    float currentSpeed = 1.5f;
-    float lastValidSpeed = 1.5f;
+    SpeedControlState speed;
     std::filesystem::path launchPath;
     bool enableLog = false;
     bool skipDirectSound = false;
@@ -74,20 +78,63 @@ float readSpeedFromEdit(HWND edit) {
     if (end == buffer || !std::isfinite(parsed)) {
         // Restore previous valid value.
         wchar_t normalized[32] = {};
-        swprintf_s(normalized, L"%.2f", g_state.lastValidSpeed);
+        swprintf_s(normalized, L"%.2f", g_state.speed.lastValidSpeed);
         SetWindowTextW(edit, normalized);
-        return g_state.lastValidSpeed;
+        controller::updateSpeedFromInput(g_state.speed, g_state.speed.lastValidSpeed);
+        return g_state.speed.lastValidSpeed;
     }
     if (parsed < 0.5f || parsed > 10.0f) {
         wchar_t normalized[32] = {};
-        swprintf_s(normalized, L"%.2f", g_state.lastValidSpeed);
+        swprintf_s(normalized, L"%.2f", g_state.speed.lastValidSpeed);
         SetWindowTextW(edit, normalized);
-        return g_state.lastValidSpeed;
+        controller::updateSpeedFromInput(g_state.speed, g_state.speed.lastValidSpeed);
+        return g_state.speed.lastValidSpeed;
     }
 
-    const float clamped = std::clamp(parsed, 0.5f, 10.0f);
-    g_state.lastValidSpeed = clamped;
-    return clamped;
+    controller::updateSpeedFromInput(g_state.speed, parsed);
+    return g_state.speed.currentSpeed;
+}
+
+void writeSpeedEdit(HWND hwnd) {
+    HWND edit = GetDlgItem(hwnd, kSpeedEditId);
+    if (!edit) return;
+    wchar_t normalized[32] = {};
+    swprintf_s(normalized, L"%.2f", g_state.speed.currentSpeed);
+    SetWindowTextW(edit, normalized);
+}
+
+void syncProcessAllAudioFromCheckbox(HWND hwnd) {
+    HWND ignoreBgm = GetDlgItem(hwnd, kIgnoreBgmCheckId);
+    if (ignoreBgm) {
+        g_state.processAllAudio = (SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    }
+}
+
+controller::SharedConfig buildSharedConfig(float speed) {
+    controller::SharedConfig cfg{};
+    cfg.speed = speed;
+    cfg.lengthGateEnabled = true;
+    cfg.enableLog = g_state.enableLog;
+    cfg.skipDirectSound = g_state.skipDirectSound;
+    cfg.skipXAudio2 = g_state.skipXAudio2;
+    cfg.skipFmod = g_state.skipFmod;
+    cfg.skipWwise = g_state.skipWwise;
+    cfg.safeMode = g_state.safeMode;
+    cfg.processAllAudio = g_state.processAllAudio;
+    cfg.stereoBgmMode = g_state.stereoBgmMode;
+    cfg.bgmSeconds = g_state.bgmSeconds;
+    return cfg;
+}
+
+bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error) {
+    HWND combo = GetDlgItem(hwnd, kProcessComboId);
+    const int index = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+    if (index < 0 || index >= static_cast<int>(g_state.processes.size())) {
+        error = L"Select a process first.";
+        return false;
+    }
+    proc = g_state.processes[static_cast<std::size_t>(index)];
+    return true;
 }
 
 void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes) {
@@ -154,22 +201,19 @@ bool selectHookForArch(ProcessArch arch, std::wstring &outPath, std::wstring &er
 }
 
 void handleApply(HWND hwnd) {
-    HWND combo = GetDlgItem(hwnd, kProcessComboId);
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
     HWND ignoreBgm = GetDlgItem(hwnd, kIgnoreBgmCheckId);
     HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
 
-    const float speed = readSpeedFromEdit(editSpeed);
-    g_state.currentSpeed = speed;
+    readSpeedFromEdit(editSpeed);
     g_state.processAllAudio = (ignoreBgm && SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
-    const int index = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
-    if (index < 0 || index >= static_cast<int>(g_state.processes.size())) {
-        setStatus(statusLabel, L"Select a process to hook first.");
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        setStatus(statusLabel, error);
         return;
     }
-
-    const auto &proc = g_state.processes[static_cast<std::size_t>(index)];
 
     controller::ProcessArch targetArch = controller::ProcessArch::Unknown;
     std::wstring archError;
@@ -178,21 +222,9 @@ void handleApply(HWND hwnd) {
         return;
     }
 
-    controller::SharedConfig cfg{};
-    cfg.speed = speed;
-    cfg.lengthGateEnabled = true;
-    cfg.enableLog = g_state.enableLog;
-    cfg.skipDirectSound = g_state.skipDirectSound;
-    cfg.skipXAudio2 = g_state.skipXAudio2;
-    cfg.skipFmod = g_state.skipFmod;
-    cfg.skipWwise = g_state.skipWwise;
-    cfg.safeMode = g_state.safeMode;
-    cfg.processAllAudio = g_state.processAllAudio;
-    cfg.stereoBgmMode = g_state.stereoBgmMode;
-    cfg.bgmSeconds = g_state.bgmSeconds;
-
+    controller::SharedConfig cfg = buildSharedConfig(g_state.speed.currentSpeed);
     std::wstring sharedErr;
-    if (!controller::writeSharedSettingsForPid(proc.pid, cfg, sharedErr)) {
+    if (!controller::applySpeedToPid(proc.pid, cfg, g_state.speed, sharedErr)) {
         setStatus(statusLabel, sharedErr);
         return;
     }
@@ -217,11 +249,16 @@ void handleApply(HWND hwnd) {
         return;
     }
 
-    std::wstring error;
     if (controller::injectDllIntoProcess(targetArch, proc.pid, dllPath, error)) {
         wchar_t message[160] = {};
-        swprintf_s(message, L"Injected into %s (PID %u) at %.2fx; gate on @ %.2fs",
-                   proc.name.c_str(), proc.pid, speed, g_state.bgmSeconds);
+        const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
+        if (g_state.speed.enabled) {
+            swprintf_s(message, L"Injected into %s (PID %u) at %.2fx; gate on @ %.2fs",
+                       proc.name.c_str(), proc.pid, effectiveSpeed, g_state.bgmSeconds);
+        } else {
+            swprintf_s(message, L"Injected into %s (PID %u) at %.2fx (speed off); gate on @ %.2fs",
+                       proc.name.c_str(), proc.pid, effectiveSpeed, g_state.bgmSeconds);
+        }
         setStatus(statusLabel, message);
     } else {
         const controller::ProcessArch selfArch = controller::getSelfArch();
@@ -234,21 +271,15 @@ void handleApply(HWND hwnd) {
 void handleLaunch(HWND hwnd) {
     HWND pathEdit = GetDlgItem(hwnd, kPathEditId);
     HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+    HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
+    if (editSpeed) {
+        readSpeedFromEdit(editSpeed);
+    }
     wchar_t pathBuf[MAX_PATH * 4] = {};
     GetWindowTextW(pathEdit, pathBuf, static_cast<int>(std::size(pathBuf)));
     std::filesystem::path exePath(pathBuf);
-    controller::SharedConfig cfg{};
-    cfg.speed = g_state.currentSpeed;
-    cfg.lengthGateEnabled = true;
-    cfg.enableLog = g_state.enableLog;
-    cfg.skipDirectSound = g_state.skipDirectSound;
-    cfg.skipXAudio2 = g_state.skipXAudio2;
-    cfg.skipFmod = g_state.skipFmod;
-    cfg.skipWwise = g_state.skipWwise;
-    cfg.safeMode = g_state.safeMode;
-    cfg.processAllAudio = g_state.processAllAudio;
-    cfg.stereoBgmMode = g_state.stereoBgmMode;
-    cfg.bgmSeconds = g_state.bgmSeconds;
+    const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
+    controller::SharedConfig cfg = buildSharedConfig(effectiveSpeed);
 
     DWORD launchedPid = 0;
     std::wstring err;
@@ -363,6 +394,25 @@ void addTooltip(HWND tooltip, HWND control, const wchar_t *text) {
     SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
 }
 
+bool registerHotkey(HWND hwnd, int id, UINT vk) {
+    if (!RegisterHotKey(hwnd, id, kHotkeyModifiers, vk)) {
+        KRKR_LOG_WARN("RegisterHotKey failed id=" + std::to_string(id) + " err=" +
+                      std::to_string(GetLastError()));
+        return false;
+    }
+    return true;
+}
+
+void registerControllerHotkeys(HWND hwnd, HWND statusLabel) {
+    bool ok = true;
+    ok &= registerHotkey(hwnd, kHotkeyToggleSpeedId, VK_OEM_7); // '
+    ok &= registerHotkey(hwnd, kHotkeySpeedUpId, VK_OEM_6); // ]
+    ok &= registerHotkey(hwnd, kHotkeySpeedDownId, VK_OEM_4); // [
+    if (!ok && statusLabel) {
+        setStatus(statusLabel, L"Failed to register one or more hotkeys.");
+    }
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
@@ -385,7 +435,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
         g_speedLabel = CreateWindowExW(0, L"STATIC", L"Speed (0.5-2.3)", WS_CHILD | WS_VISIBLE, 12, 68, 120, 20, hwnd, nullptr, nullptr, nullptr);
         wchar_t speedText[32] = {};
-        swprintf_s(speedText, L"%.2f", g_state.currentSpeed);
+        swprintf_s(speedText, L"%.2f", g_state.speed.currentSpeed);
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", speedText,
                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                          140, 66, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
@@ -421,6 +471,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
+        registerControllerHotkeys(hwnd, GetDlgItem(hwnd, kStatusLabelId));
 
         HWND tooltip = createTooltip(hwnd);
         addTooltip(tooltip, combo, L"Select the game process to inject");
@@ -489,6 +540,44 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         break;
     }
+    case WM_HOTKEY: {
+        HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+        HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
+        if (editSpeed) {
+            readSpeedFromEdit(editSpeed);
+        }
+        ProcessInfo proc;
+        std::wstring error;
+        if (!getSelectedProcess(hwnd, proc, error)) {
+            setStatus(statusLabel, error);
+            return 0;
+        }
+        syncProcessAllAudioFromCheckbox(hwnd);
+        controller::SharedConfig baseCfg = buildSharedConfig(g_state.speed.currentSpeed);
+        std::wstring status;
+        if (wParam == kHotkeyToggleSpeedId) {
+            if (!controller::applySpeedHotkey(proc.pid, baseCfg, g_state.speed, SpeedHotkeyAction::Toggle, status, error)) {
+                setStatus(statusLabel, error);
+                return 0;
+            }
+        } else if (wParam == kHotkeySpeedUpId) {
+            if (!controller::applySpeedHotkey(proc.pid, baseCfg, g_state.speed, SpeedHotkeyAction::SpeedUp, status, error)) {
+                setStatus(statusLabel, error);
+                return 0;
+            }
+        } else if (wParam == kHotkeySpeedDownId) {
+            if (!controller::applySpeedHotkey(proc.pid, baseCfg, g_state.speed, SpeedHotkeyAction::SpeedDown, status, error)) {
+                setStatus(statusLabel, error);
+                return 0;
+            }
+        } else {
+            break;
+        }
+        writeSpeedEdit(hwnd);
+        setStatus(statusLabel, status);
+        return 0;
+        break;
+    }
     case kMsgRefreshQuiet: {
         refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId), true);
         return 0;
@@ -502,6 +591,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         break;
     }
     case WM_DESTROY:
+        UnregisterHotKey(hwnd, kHotkeyToggleSpeedId);
+        UnregisterHotKey(hwnd, kHotkeySpeedUpId);
+        UnregisterHotKey(hwnd, kHotkeySpeedDownId);
         KRKR_LOG_INFO("KrkrSpeedController window destroyed, exiting.");
         PostQuitMessage(0);
         break;
@@ -520,8 +612,7 @@ void setInitialOptions(const ControllerOptions &opts) {
     g_state.skipWwise = opts.skipWwise;
     g_state.safeMode = opts.safeMode;
     g_state.processAllAudio = opts.processAllAudio;
-    g_state.currentSpeed = std::clamp(opts.speed, 0.5f, 10.0f);
-    g_state.lastValidSpeed = g_state.currentSpeed;
+    controller::initSpeedState(g_state.speed, opts.speed, true);
     g_state.bgmSeconds = opts.bgmSeconds;
     g_state.launchPath = opts.launchPath.empty() ? std::filesystem::path{} : std::filesystem::path(opts.launchPath);
     g_state.stereoBgmMode = opts.stereoBgmMode;

@@ -22,6 +22,10 @@ The x86 controller can inject into both x86 and x64 games: it spawns the injecto
 ## Usage
 - Launch `KrkrSpeedController.exe`.
 - Click `Refresh`, pick the game from the dropdown, enter the target speed, then click `Hook + Apply`.
+- Global hotkeys:
+  - `Alt + '`: toggle speed on/off.
+  - `Alt + ]`: speed up 0.1x (if off, turns on and sets 1.1x).
+  - `Alt + [`: speed down 0.1x (if off, turns on and sets 0.9x).
 - If AV blocks the binaries, add an exception or temporarily disable it.
 - If the target is protected/elevated, run the controller as Administrator.
 - If BGM keeps playing at normal speed, or you want BGM sped up too, check `Process BGM` and click `Hook + Apply`.
