@@ -185,13 +185,33 @@ bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error) {
 }
 
 void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes) {
+    int prevSel = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+    DWORD prevPid = 0;
+    if (prevSel >= 0) {
+        wchar_t item[256] = {};
+        if (SendMessageW(combo, CB_GETLBTEXT, prevSel, reinterpret_cast<LPARAM>(item)) > 0) {
+            if (wcsncmp(item, L"[", 1) == 0) {
+                wchar_t *end = nullptr;
+                prevPid = std::wcstoul(item + 1, &end, 10);
+            }
+        }
+    }
+
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    for (const auto &proc : processes) {
+    int restoredIndex = -1;
+    for (size_t i = 0; i < processes.size(); ++i) {
+        const auto &proc = processes[i];
         std::wstring label = L"[" + std::to_wstring(proc.pid) + L"] " + proc.name;
+        if (!proc.windowTitle.empty()) {
+            label += L" | " + proc.windowTitle;
+        }
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+        if (prevPid != 0 && proc.pid == prevPid) {
+            restoredIndex = static_cast<int>(i);
+        }
     }
     if (!processes.empty()) {
-        SendMessageW(combo, CB_SETCURSEL, 0, 0);
+        SendMessageW(combo, CB_SETCURSEL, restoredIndex >= 0 ? restoredIndex : 0, 0);
     }
 }
 

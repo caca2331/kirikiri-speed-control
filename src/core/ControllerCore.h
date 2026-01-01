@@ -15,6 +15,7 @@ enum class ProcessArch { Unknown, X86, X64, Arm64 };
 
 struct ProcessInfo {
     std::wstring name;
+    std::wstring windowTitle;
     DWORD pid = 0;
     ProcessArch arch = ProcessArch::Unknown;
     bool hasWindow = false;

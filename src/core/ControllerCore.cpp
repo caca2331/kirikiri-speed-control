@@ -25,11 +25,12 @@ ProcessArch classifyMachine(USHORT machine) {
     }
 }
 
-bool hasVisibleWindow(DWORD pid) {
+bool getVisibleWindowTitle(DWORD pid, std::wstring &titleOut) {
     struct EnumData {
         DWORD pid;
         bool found = false;
-    } data{pid, false};
+        std::wstring *title = nullptr;
+    } data{pid, false, &titleOut};
 
     EnumWindows(
         [](HWND hwnd, LPARAM lParam) -> BOOL {
@@ -38,6 +39,12 @@ bool hasVisibleWindow(DWORD pid) {
             GetWindowThreadProcessId(hwnd, &windowPid);
             if (windowPid == d->pid && IsWindowVisible(hwnd)) {
                 d->found = true;
+                wchar_t buf[256] = {};
+                if (GetWindowTextW(hwnd, buf, static_cast<int>(std::size(buf))) > 0) {
+                    if (d->title) {
+                        d->title->assign(buf);
+                    }
+                }
                 return FALSE;
             }
             return TRUE;
@@ -490,12 +497,14 @@ std::vector<ProcessInfo> enumerateVisibleProcesses() {
             if (session == 0 || session != currentSession) {
                 continue; // skip services and other sessions
             }
-            if (!hasVisibleWindow(entry.th32ProcessID)) {
+            std::wstring title;
+            if (!getVisibleWindowTitle(entry.th32ProcessID, title)) {
                 continue; // skip helpers/subprocesses without a top-level window
             }
 
             ProcessInfo info;
             info.name = entry.szExeFile;
+            info.windowTitle = std::move(title);
             info.pid = entry.th32ProcessID;
             info.hasWindow = true;
             result.push_back(std::move(info));
