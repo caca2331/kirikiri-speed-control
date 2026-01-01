@@ -39,6 +39,7 @@ const KeyEntry kEntries[] = {
     {UiTextId::LabelSpeed, "label.speed", L"Speed (0.5-2.3)"},
     {UiTextId::LabelProcessBgm, "label.process_bgm", L"Process BGM"},
     {UiTextId::LabelAutoHook, "label.auto_hook", L"Auto-Hook This App"},
+    {UiTextId::LabelHotkey, "label.hotkey", L"Hotkey"},
     {UiTextId::LinkMarkup, "link.markup",
      L"<a href=\"https://github.com/caca2331/kirikiri-speed-control\">GitHub: kirikiri-speed-control</a>"},
     {UiTextId::LinkPlain, "link.plain", L"GitHub: https://github.com/caca2331/kirikiri-speed-control"},
@@ -48,7 +49,13 @@ const KeyEntry kEntries[] = {
      L"Full path to game executable; launch suspended, inject, then resume"},
     {UiTextId::TooltipLaunchButton, "tooltip.launch_button",
      L"Launch the game (suspended) and inject matching hook automatically"},
-    {UiTextId::TooltipSpeedEdit, "tooltip.speed_edit", L"Target speed (0.5-10.0x, recommended 0.75-2.0x)"}
+    {UiTextId::TooltipSpeedEdit, "tooltip.speed_edit", L"Target speed (0.5-10.0x, recommended 0.75-2.0x)"},
+    {UiTextId::TooltipProcessBgm, "tooltip.process_bgm",
+     L"By default only changing speed of Voice.\nCheck to speed up all audios including BGM, or if voices fail to speed up"},
+    {UiTextId::TooltipAutoHook, "tooltip.auto_hook",
+     L"Check to auto-hook the selected app when it launches in the future. Uncheck to cancel."},
+    {UiTextId::TooltipHotkey, "tooltip.hotkey",
+     L"Alt + ' : Toggle speed\nAlt + ] : Speed up\nAlt + [ : Speed down"}
 };
 
 std::unordered_map<std::wstring, UiTextPack> g_packs;

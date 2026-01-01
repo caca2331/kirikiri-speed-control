@@ -104,6 +104,7 @@ static HWND g_autoHookCheck = nullptr;
 static HWND g_autoHookLabel = nullptr;
 static HWND g_ignoreBgmLabel = nullptr;
 static HWND g_languageCombo = nullptr;
+static HWND g_hotkeyLabel = nullptr;
 static HWND g_tooltip = nullptr;
 static std::unordered_map<std::uintptr_t, UiTextId> g_tooltipById;
 static HWND g_mainWindow = nullptr;
@@ -150,6 +151,9 @@ void refreshUiText(HWND hwnd) {
     }
     if (g_autoHookLabel) {
         SetWindowTextW(g_autoHookLabel, ui_text::UiText(UiTextId::LabelAutoHook).c_str());
+    }
+    if (g_hotkeyLabel) {
+        SetWindowTextW(g_hotkeyLabel, ui_text::UiText(UiTextId::LabelHotkey).c_str());
     }
     if (g_link) {
         const auto &linkText = g_linkIsSysLink ? ui_text::UiText(UiTextId::LinkMarkup)
@@ -775,16 +779,23 @@ void layoutControls(HWND hwnd) {
     y += rowHeight;
     SetWindowPos(GetDlgItem(hwnd, kStatusLabelId), nullptr, x, y, rc.right - padding * 2, statusHeight, SWP_NOZORDER);
 
-    if (g_link) {
-        int linkHeight = comboHeight + 4;
-        const int linkPadding = 8;
-        const int linkWidth = rc.right - padding * 3 - buttonWidth - linkPadding;
-        SetWindowPos(g_link, nullptr, x, rc.bottom - padding - linkHeight, linkWidth, linkHeight, SWP_NOZORDER);
-    }
+    const int linkHeight = comboHeight + 4;
+    const int linkPadding = 8;
+    const int comboX = rc.right - buttonWidth - padding;
+    const int comboY = rc.bottom - padding - comboHeight;
+    const int hotkeyWidth = buttonWidth / 2;
+    const int hotkeyX = comboX - linkPadding - hotkeyWidth;
+    const int bottomY = rc.bottom - padding - linkHeight;
+    int linkWidth = hotkeyX - x - linkPadding;
+    if (linkWidth < 0) linkWidth = 0;
 
+    if (g_link) {
+        SetWindowPos(g_link, nullptr, x, bottomY, linkWidth, linkHeight, SWP_NOZORDER);
+    }
+    if (g_hotkeyLabel) {
+        SetWindowPos(g_hotkeyLabel, nullptr, hotkeyX, bottomY, hotkeyWidth, linkHeight, SWP_NOZORDER);
+    }
     if (g_languageCombo) {
-        const int comboX = rc.right - buttonWidth - padding;
-        const int comboY = rc.bottom - padding - comboHeight;
         const int dropHeight = comboHeight * 3; // selection + 2 items
         SetWindowPos(g_languageCombo, nullptr, comboX, comboY, buttonWidth, dropHeight, SWP_NOZORDER);
     }
@@ -860,7 +871,24 @@ void updateTrackedTooltip(const MSG &msg) {
         return;
     }
 
-    HWND target = msg.hwnd;
+    HWND target = nullptr;
+    if (g_mainWindow) {
+        HWND hit = WindowFromPoint(msg.pt);
+        if (hit == g_tooltip) {
+            hit = nullptr;
+        }
+        if (!hit || hit == g_mainWindow) {
+            POINT clientPt = msg.pt;
+            ScreenToClient(g_mainWindow, &clientPt);
+            hit = ChildWindowFromPointEx(g_mainWindow, clientPt, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED);
+            if (hit == g_mainWindow) {
+                hit = nullptr;
+            }
+        }
+        target = hit ? hit : msg.hwnd;
+    } else {
+        target = msg.hwnd;
+    }
     while (target && target != g_mainWindow) {
         if (g_tooltipById.find(reinterpret_cast<std::uintptr_t>(target)) != g_tooltipById.end()) {
             break;
@@ -940,9 +968,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                        0, 10, 100, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRefreshButtonId)), nullptr, nullptr);
 
         g_processLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelProcess).c_str(),
-                                         WS_CHILD | WS_VISIBLE, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
+                                         WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
         g_pathLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelGamePath).c_str(),
-                                      WS_CHILD | WS_VISIBLE, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
+                                      WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
         HWND pathEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                         140, 38, initialWidth, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPathEditId)), nullptr, nullptr);
@@ -951,7 +979,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                       0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLaunchButtonId)), nullptr, nullptr);
 
         g_speedLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelSpeed).c_str(),
-                                       WS_CHILD | WS_VISIBLE, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
+                                       WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
         wchar_t speedText[32] = {};
         swprintf_s(speedText, L"%.2f", g_state.speed.currentSpeed);
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", speedText,
@@ -964,10 +992,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND ignoreBgm = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                          140 + 40 + 12 + 90, 66, 20, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmCheckId)), nullptr, nullptr);
         g_ignoreBgmLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelProcessBgm).c_str(),
-                                           WS_CHILD | WS_VISIBLE,
+                                           WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                            140 + 40 + 12, 66, 90, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmLabelId)), nullptr, nullptr);
         g_autoHookLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelAutoHook).c_str(),
-                                          WS_CHILD | WS_VISIBLE,
+                                          WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                           140 + 40 + 12 + 90 + 20 + 12, 66, 135, 20,
                                           hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookLabelId)), nullptr, nullptr);
         g_autoHookCheck = CreateWindowExW(0, L"BUTTON", L"",
@@ -1009,6 +1037,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (g_link) {
             SendMessageW(g_link, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
         }
+        g_hotkeyLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelHotkey).c_str(),
+                                        WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                                        12, 124, 60, 24, hwnd, nullptr, nullptr, nullptr);
+        if (g_hotkeyLabel) {
+            SendMessageW(g_hotkeyLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        }
 
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
@@ -1020,12 +1054,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
         g_tooltip = createTooltip(hwnd);
         addTooltip(g_tooltip, combo, UiTextId::TooltipProcessCombo);
+        addTooltip(g_tooltip, g_processLabel, UiTextId::TooltipProcessCombo);
         addTooltip(g_tooltip, refresh, UiTextId::TooltipHookButton);
         addTooltip(g_tooltip, pathEdit, UiTextId::TooltipPathEdit);
+        addTooltip(g_tooltip, g_pathLabel, UiTextId::TooltipPathEdit);
         addTooltip(g_tooltip, launch, UiTextId::TooltipLaunchButton);
         addTooltip(g_tooltip, speedEdit, UiTextId::TooltipSpeedEdit);
+        addTooltip(g_tooltip, g_speedLabel, UiTextId::TooltipSpeedEdit);
+        addTooltip(g_tooltip, ignoreBgm, UiTextId::TooltipProcessBgm);
+        addTooltip(g_tooltip, g_ignoreBgmLabel, UiTextId::TooltipProcessBgm);
+        addTooltip(g_tooltip, g_autoHookCheck, UiTextId::TooltipAutoHook);
+        addTooltip(g_tooltip, g_autoHookLabel, UiTextId::TooltipAutoHook);
+        addTooltip(g_tooltip, g_hotkeyLabel, UiTextId::TooltipHotkey);
         // Hook + Apply tooltip removed with button.
-        // Tooltip removed for Process BGM for now.
 
         refreshUiText(hwnd);
 

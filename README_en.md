@@ -28,7 +28,7 @@ The x86 controller can inject into both x86 and x64 games: it spawns the injecto
   - `Alt + [`: speed down 0.1x (if off, turns on and sets 0.9x).
 - If AV blocks the binaries, add an exception or temporarily disable it.
 - If the target is protected/elevated, run the controller as Administrator.
-- If BGM keeps playing at normal speed, or you want BGM sped up too, check `Process BGM`.
+- If voices fail to speed up, or you want BGM sped up too, check `Process BGM`.
 - Auto-inject: select a game from the dropdown and check `Auto-Hook This App`. When the game is detected running, it auto-injects; unchecking removes it from the config.
 - See the Controller CLI options for advanced usage.
 - Please submit issues for unsupported games.
