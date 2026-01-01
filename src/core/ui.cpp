@@ -6,6 +6,7 @@
 #include "ControllerCore.h"
 
 #include "../common/Logging.h"
+#include "../common/UiText.h"
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <algorithm>
@@ -33,6 +34,7 @@ constexpr int kIgnoreBgmCheckId = 1009;
 constexpr int kIgnoreBgmLabelId = 1010;
 constexpr int kAutoHookCheckId = 1011;
 constexpr int kAutoHookLabelId = 1012;
+constexpr int kLanguageComboId = 1013;
 constexpr UINT kAutoHookTimerId = 3001;
 constexpr UINT kAutoHookIntervalMs = 1000;
 constexpr UINT kMsgAutoSelectPid = WM_APP + 2;
@@ -46,6 +48,7 @@ using controller::ProcessArch;
 using controller::ProcessInfo;
 using controller::SpeedControlState;
 using controller::SpeedHotkeyAction;
+using ui_text::UiTextId;
 
 bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error);
 void refreshProcessList(HWND combo, HWND statusLabel, bool quiet);
@@ -53,6 +56,8 @@ controller::SharedConfig buildSharedConfig(float speed);
 void updateAutoHookCheckbox(HWND hwnd);
 void updateHookButtonState(HWND hwnd);
 bool pruneHookedPids(const std::unordered_set<DWORD> &current);
+void ensureUiTextLoaded();
+void refreshUiText(HWND hwnd);
 
 void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
     if (!combo || !statusLabel) return;
@@ -80,18 +85,22 @@ struct AppState {
     bool safeMode = false;
     bool processAllAudio = false;
     float bgmSeconds = 60.0f; // also used as length gate seconds
-    std::vector<std::wstring> tooltipTexts; // keep strings alive for tooltips
     std::uint32_t stereoBgmMode = 1;
     std::wstring searchTerm;
 };
 
 AppState g_state;
 static HWND g_link = nullptr;
+static bool g_linkIsSysLink = false;
 static ControllerOptions g_initialOptions{};
+static HWND g_processLabel = nullptr;
 static HWND g_pathLabel = nullptr;
 static HWND g_speedLabel = nullptr;
 static HWND g_autoHookCheck = nullptr;
 static HWND g_autoHookLabel = nullptr;
+static HWND g_ignoreBgmLabel = nullptr;
+static HWND g_languageCombo = nullptr;
+static HWND g_tooltip = nullptr;
 static std::unordered_set<DWORD> g_knownPids;
 static std::unordered_set<DWORD> g_autoHookAttempted;
 static std::unordered_set<DWORD> g_hookedPids;
@@ -102,6 +111,52 @@ static WNDPROC g_speedEditProc = nullptr;
 void setStatus(HWND statusLabel, const std::wstring &text) {
     SetWindowTextW(statusLabel, text.c_str());
     KRKR_LOG_INFO(text);
+}
+
+void ensureUiTextLoaded() {
+    static bool loaded = false;
+    if (loaded) return;
+    std::wstring error;
+    auto path = controller::controllerDirectory() / L"ui_texts.yaml";
+    if (!ui_text::LoadUiTextPacks(path, error)) {
+        if (!error.empty()) {
+            KRKR_LOG_WARN(L"UiText load failed: " + error);
+        }
+    }
+    ui_text::SetUiLanguage(L"zh-CN");
+    loaded = true;
+}
+
+void refreshUiText(HWND hwnd) {
+    if (!hwnd) return;
+    if (g_processLabel) {
+        SetWindowTextW(g_processLabel, ui_text::UiText(UiTextId::LabelProcess).c_str());
+    }
+    if (g_pathLabel) {
+        SetWindowTextW(g_pathLabel, ui_text::UiText(UiTextId::LabelGamePath).c_str());
+    }
+    if (g_speedLabel) {
+        SetWindowTextW(g_speedLabel, ui_text::UiText(UiTextId::LabelSpeed).c_str());
+    }
+    if (g_ignoreBgmLabel) {
+        SetWindowTextW(g_ignoreBgmLabel, ui_text::UiText(UiTextId::LabelProcessBgm).c_str());
+    }
+    if (g_autoHookLabel) {
+        SetWindowTextW(g_autoHookLabel, ui_text::UiText(UiTextId::LabelAutoHook).c_str());
+    }
+    if (g_link) {
+        const auto &linkText = g_linkIsSysLink ? ui_text::UiText(UiTextId::LinkMarkup)
+                                               : ui_text::UiText(UiTextId::LinkPlain);
+        SetWindowTextW(g_link, linkText.c_str());
+    }
+    SetWindowTextW(hwnd, ui_text::UiText(UiTextId::WindowTitle).c_str());
+
+    HWND launchButton = GetDlgItem(hwnd, kLaunchButtonId);
+    if (launchButton) {
+        SetWindowTextW(launchButton, ui_text::UiText(UiTextId::ButtonLaunchHook).c_str());
+    }
+    updateHookButtonState(hwnd);
+
 }
 
 float readSpeedFromEdit(HWND edit) {
@@ -175,10 +230,10 @@ void updateHookButtonState(HWND hwnd) {
 
     const bool hooked = (g_hookedPids.find(proc.pid) != g_hookedPids.end());
     if (hooked) {
-        SetWindowTextW(hookButton, L"Hooked");
+        SetWindowTextW(hookButton, ui_text::UiText(UiTextId::ButtonHooked).c_str());
         EnableWindow(hookButton, FALSE);
     } else {
-        SetWindowTextW(hookButton, L"Hook");
+        SetWindowTextW(hookButton, ui_text::UiText(UiTextId::ButtonHook).c_str());
         EnableWindow(hookButton, TRUE);
     }
 }
@@ -714,7 +769,16 @@ void layoutControls(HWND hwnd) {
 
     if (g_link) {
         int linkHeight = comboHeight + 4;
-        SetWindowPos(g_link, nullptr, x, rc.bottom - padding - linkHeight, rc.right - padding * 2, linkHeight, SWP_NOZORDER);
+        const int linkPadding = 8;
+        const int linkWidth = rc.right - padding * 3 - buttonWidth - linkPadding;
+        SetWindowPos(g_link, nullptr, x, rc.bottom - padding - linkHeight, linkWidth, linkHeight, SWP_NOZORDER);
+    }
+
+    if (g_languageCombo) {
+        const int comboX = rc.right - buttonWidth - padding;
+        const int comboY = rc.bottom - padding - comboHeight;
+        const int dropHeight = comboHeight * 3; // selection + 2 items
+        SetWindowPos(g_languageCombo, nullptr, comboX, comboY, buttonWidth, dropHeight, SWP_NOZORDER);
     }
 }
 
@@ -723,21 +787,22 @@ HWND createTooltip(HWND parent) {
                                    WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                                    parent, nullptr, nullptr, nullptr);
     if (tooltip) {
+        SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
         SetWindowPos(tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
     return tooltip;
 }
 
-void addTooltip(HWND tooltip, HWND control, const wchar_t *text) {
+void addTooltip(HWND tooltip, HWND control, UiTextId textId) {
     if (!tooltip || !control) return;
-    g_state.tooltipTexts.emplace_back(text);
 
     TOOLINFOW ti{};
     ti.cbSize = sizeof(ti);
     ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
     ti.hwnd = GetParent(control);
     ti.uId = reinterpret_cast<UINT_PTR>(control);
-    ti.lpszText = g_state.tooltipTexts.back().data();
+    ti.lpszText = LPSTR_TEXTCALLBACKW;
+    ti.lParam = static_cast<LPARAM>(textId);
     SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
 }
 
@@ -763,24 +828,30 @@ void registerControllerHotkeys(HWND hwnd, HWND statusLabel) {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
-        CreateWindowExW(0, L"STATIC", L"Process", WS_CHILD | WS_VISIBLE, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
+        ensureUiTextLoaded();
         RECT rcClient{};
         GetClientRect(hwnd, &rcClient);
         int initialWidth = rcClient.right - 120 - 120 - 12 * 3;
         HWND combo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", nullptr,
                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
                                      132, 10, initialWidth, 200, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProcessComboId)), nullptr, nullptr);
-        HWND refresh = CreateWindowExW(0, L"BUTTON", L"Hook", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        HWND refresh = CreateWindowExW(0, L"BUTTON", ui_text::UiText(UiTextId::ButtonHook).c_str(),
+                                       WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                        0, 10, 100, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRefreshButtonId)), nullptr, nullptr);
 
-        g_pathLabel = CreateWindowExW(0, L"STATIC", L"Game Path", WS_CHILD | WS_VISIBLE, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
+        g_processLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelProcess).c_str(),
+                                         WS_CHILD | WS_VISIBLE, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
+        g_pathLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelGamePath).c_str(),
+                                      WS_CHILD | WS_VISIBLE, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
         HWND pathEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                         140, 38, initialWidth, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPathEditId)), nullptr, nullptr);
-        HWND launch = CreateWindowExW(0, L"BUTTON", L"Launch + Hook", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        HWND launch = CreateWindowExW(0, L"BUTTON", ui_text::UiText(UiTextId::ButtonLaunchHook).c_str(),
+                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                       0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLaunchButtonId)), nullptr, nullptr);
 
-        g_speedLabel = CreateWindowExW(0, L"STATIC", L"Speed (0.5-2.3)", WS_CHILD | WS_VISIBLE, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
+        g_speedLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelSpeed).c_str(),
+                                       WS_CHILD | WS_VISIBLE, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
         wchar_t speedText[32] = {};
         swprintf_s(speedText, L"%.2f", g_state.speed.currentSpeed);
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", speedText,
@@ -792,9 +863,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         HWND ignoreBgm = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                          140 + 40 + 12 + 90, 66, 20, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmCheckId)), nullptr, nullptr);
-        HWND ignoreBgmLabel = CreateWindowExW(0, L"STATIC", L"Process BGM", WS_CHILD | WS_VISIBLE,
-                                              140 + 40 + 12, 66, 90, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmLabelId)), nullptr, nullptr);
-        g_autoHookLabel = CreateWindowExW(0, L"STATIC", L"Auto-Hook This App",
+        g_ignoreBgmLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelProcessBgm).c_str(),
+                                           WS_CHILD | WS_VISIBLE,
+                                           140 + 40 + 12, 66, 90, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmLabelId)), nullptr, nullptr);
+        g_autoHookLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelAutoHook).c_str(),
                                           WS_CHILD | WS_VISIBLE,
                                           140 + 40 + 12 + 90 + 20 + 12, 66, 135, 20,
                                           hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookLabelId)), nullptr, nullptr);
@@ -802,6 +874,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                           WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                           140 + 40 + 12 + 90 + 20 + 12 + 135 + 6, 66, 20, 20,
                                           hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookCheckId)), nullptr, nullptr);
+        g_languageCombo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", nullptr,
+                                          WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                          0, 66, 120, 200,
+                                          hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLanguageComboId)), nullptr, nullptr);
+        if (g_languageCombo) {
+            SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
+            SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"中文 Chinese"));
+            SendMessageW(g_languageCombo, CB_SETCURSEL, 1, 0);
+        }
         if (ignoreBgm) {
             SendMessageW(ignoreBgm, BM_SETCHECK, g_state.processAllAudio ? BST_CHECKED : BST_UNCHECKED, 0);
         }
@@ -810,14 +891,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE,
                         12, 96, 400, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
 
-        const wchar_t *linkText = L"<a href=\"https://github.com/caca2331/kirikiri-speed-control\">GitHub: kirikiri-speed-control</a>";
+        g_linkIsSysLink = true;
+        const wchar_t *linkText = ui_text::UiText(UiTextId::LinkMarkup).c_str();
         g_link = CreateWindowExW(0, WC_LINK, linkText,
                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                  12, 124, 500, 24,
                                  hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLinkId)), nullptr, nullptr);
         if (!g_link) {
             // Fallback for systems without SysLink (e.g., missing comctl32 v6 manifest).
-            const wchar_t *fallbackText = L"GitHub: https://github.com/caca2331/kirikiri-speed-control";
+            g_linkIsSysLink = false;
+            const wchar_t *fallbackText = ui_text::UiText(UiTextId::LinkPlain).c_str();
             g_link = CreateWindowExW(0, L"STATIC", fallbackText,
                                      WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                      12, 124, 500, 20,
@@ -835,14 +918,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         SetTimer(hwnd, kAutoHookTimerId, kAutoHookIntervalMs, nullptr);
         registerControllerHotkeys(hwnd, GetDlgItem(hwnd, kStatusLabelId));
 
-        HWND tooltip = createTooltip(hwnd);
-        addTooltip(tooltip, combo, L"Select the game process to inject");
-        addTooltip(tooltip, refresh, L"Hook the selected process");
-        addTooltip(tooltip, pathEdit, L"Full path to game executable; launch suspended, inject, then resume");
-        addTooltip(tooltip, launch, L"Launch the game (suspended) and inject matching hook automatically");
-        addTooltip(tooltip, speedEdit, L"Target speed (0.5-10.0x, recommended 0.75-2.0x)");
+        g_tooltip = createTooltip(hwnd);
+        addTooltip(g_tooltip, combo, UiTextId::TooltipProcessCombo);
+        addTooltip(g_tooltip, refresh, UiTextId::TooltipHookButton);
+        addTooltip(g_tooltip, pathEdit, UiTextId::TooltipPathEdit);
+        addTooltip(g_tooltip, launch, UiTextId::TooltipLaunchButton);
+        addTooltip(g_tooltip, speedEdit, UiTextId::TooltipSpeedEdit);
         // Hook + Apply tooltip removed with button.
         // Tooltip removed for Process BGM for now.
+
+        refreshUiText(hwnd);
 
         if (!g_initialOptions.launchPath.empty()) {
             SetWindowTextW(pathEdit, g_initialOptions.launchPath.c_str());
@@ -902,6 +987,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         } else if (id == kProcessComboId && HIWORD(wParam) == CBN_SELCHANGE) {
             updateAutoHookCheckbox(hwnd);
             updateHookButtonState(hwnd);
+        } else if (id == kLanguageComboId && HIWORD(wParam) == CBN_SELCHANGE) {
+            const int sel = static_cast<int>(SendMessageW(g_languageCombo, CB_GETCURSEL, 0, 0));
+            if (sel == 1) {
+                ui_text::SetUiLanguage(L"zh-CN");
+            } else {
+                ui_text::SetUiLanguage(L"en");
+            }
+            refreshUiText(hwnd);
         } else if (id == kSpeedEditId && HIWORD(wParam) == EN_KILLFOCUS) {
             HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
             if (editSpeed) {
@@ -992,6 +1085,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     case WM_NOTIFY: {
         auto *hdr = reinterpret_cast<NMHDR *>(lParam);
+        if (hdr && hdr->code == TTN_GETDISPINFOW) {
+            auto *info = reinterpret_cast<NMTTDISPINFOW *>(lParam);
+            const auto id = static_cast<UiTextId>(info->lParam);
+            info->lpszText = const_cast<wchar_t *>(ui_text::UiText(id).c_str());
+            return 0;
+        }
         if (hdr && hdr->idFrom == kLinkId && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
             ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
             return 0;
@@ -1047,7 +1146,9 @@ int runController(HINSTANCE hInstance, int nCmdShow) {
 
     RegisterClassW(&wc);
 
-    HWND hwnd = CreateWindowExW(0, CLASS_NAME, L"Krkr Speed Controller",
+    ensureUiTextLoaded();
+    const auto &title = ui_text::UiText(UiTextId::WindowTitle);
+    HWND hwnd = CreateWindowExW(0, CLASS_NAME, title.c_str(),
                                 WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 620, 240,
                                 nullptr, nullptr, hInstance, nullptr);

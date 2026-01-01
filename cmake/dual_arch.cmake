@@ -107,6 +107,7 @@ configure_and_build("x86" "${BUILD_X86}" "x86-windows" "Win32")
 stage("x86-controller" "${BUILD_X86}" "${DIST_ROOT}" "x86-windows"
       KrkrSpeedController.exe
       SoundTouch.dll
+      ui_texts.yaml
 )
 stage("x86" "${BUILD_X86}" "${DIST_ROOT}/x86" "x86-windows"
       krkr_injector.exe
