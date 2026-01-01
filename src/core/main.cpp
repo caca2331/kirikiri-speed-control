@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "ControllerCore.h"
 #include "../common/Logging.h"
 #include <Windows.h>
 #include <shellapi.h>
@@ -97,6 +98,7 @@ CliOptions parseArgs() {
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     auto opts = parseArgs();
+    krkrspeed::controller::loadAutoHookConfig();
     krkrspeed::ui::ControllerOptions controllerOpts{};
     controllerOpts.enableLog = opts.enableLog;
     controllerOpts.skipDirectSound = opts.skipDs;

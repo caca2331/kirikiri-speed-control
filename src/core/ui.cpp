@@ -31,6 +31,8 @@ constexpr int kPathEditId = 1007;
 constexpr int kLaunchButtonId = 1008;
 constexpr int kIgnoreBgmCheckId = 1009;
 constexpr int kIgnoreBgmLabelId = 1010;
+constexpr int kAutoHookCheckId = 1011;
+constexpr int kAutoHookLabelId = 1012;
 constexpr UINT kMsgRefreshQuiet = WM_APP + 1;
 constexpr int kHotkeyToggleSpeedId = 2001;
 constexpr int kHotkeySpeedUpId = 2002;
@@ -41,6 +43,8 @@ using controller::ProcessArch;
 using controller::ProcessInfo;
 using controller::SpeedControlState;
 using controller::SpeedHotkeyAction;
+
+bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error);
 
 struct AppState {
     std::vector<ProcessInfo> processes;
@@ -64,6 +68,8 @@ static HWND g_link = nullptr;
 static ControllerOptions g_initialOptions{};
 static HWND g_pathLabel = nullptr;
 static HWND g_speedLabel = nullptr;
+static HWND g_autoHookCheck = nullptr;
+static HWND g_autoHookLabel = nullptr;
 
 void setStatus(HWND statusLabel, const std::wstring &text) {
     SetWindowTextW(statusLabel, text.c_str());
@@ -108,6 +114,47 @@ void syncProcessAllAudioFromCheckbox(HWND hwnd) {
     if (ignoreBgm) {
         g_state.processAllAudio = (SendMessageW(ignoreBgm, BM_GETCHECK, 0, 0) == BST_CHECKED);
     }
+}
+
+void updateAutoHookCheckbox(HWND hwnd) {
+    if (!g_autoHookCheck) return;
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        SendMessageW(g_autoHookCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        return;
+    }
+    std::wstring exePath;
+    if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+        SendMessageW(g_autoHookCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        return;
+    }
+    const bool enabled = controller::isAutoHookEnabled(exePath, proc.name);
+    SendMessageW(g_autoHookCheck, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+void handleAutoHookToggle(HWND hwnd) {
+    if (!g_autoHookCheck) return;
+    HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    std::wstring exePath;
+    if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    const bool checked = (SendMessageW(g_autoHookCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    if (!controller::setAutoHookEnabled(exePath, proc.name, checked, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    std::wstring msg = checked ? (L"Auto-hook enabled for " + proc.name)
+                               : (L"Auto-hook disabled for " + proc.name);
+    setStatus(statusLabel, msg);
 }
 
 controller::SharedConfig buildSharedConfig(float speed) {
@@ -311,6 +358,8 @@ void handleLaunch(HWND hwnd) {
                         DWORD listedPid = std::wcstoul(item + 1, &end, 10);
                         if (listedPid == pid) {
                             PostMessageW(combo, CB_SETCURSEL, i, 0);
+                            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kProcessComboId, CBN_SELCHANGE),
+                                         reinterpret_cast<LPARAM>(combo));
                             return;
                         }
                     }
@@ -324,9 +373,9 @@ void layoutControls(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     const int padding = 12;
-    const int labelWidth = 120;
+    const int labelWidth = 100;
     const int comboHeight = 24;
-    const int editWidth = 120;
+    const int editWidth = 40;
     const int buttonWidth = 120;
     const int wideEditWidth = rc.right - labelWidth - buttonWidth - padding * 3;
     const int rowHeight = 28;
@@ -359,6 +408,15 @@ void layoutControls(HWND hwnd) {
                  SWP_NOZORDER);
     SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelWidth + editWidth + padding + 94, y, 20, checkboxHeight,
                  SWP_NOZORDER);
+    if (g_autoHookLabel) {
+        const int autoHookX = x + labelWidth + editWidth + padding + 94 + 20 + padding;
+        const int autoHookLabelWidth = 135;
+        SetWindowPos(g_autoHookLabel, nullptr, autoHookX, y + 2, autoHookLabelWidth, checkboxHeight, SWP_NOZORDER);
+        if (g_autoHookCheck) {
+            const int autoHookCheckX = autoHookX + autoHookLabelWidth + 6;
+            SetWindowPos(g_autoHookCheck, nullptr, autoHookCheckX, y, 20, checkboxHeight, SWP_NOZORDER);
+        }
+    }
     SetWindowPos(GetDlgItem(hwnd, kApplyButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
                  SWP_NOZORDER);
 
@@ -416,7 +474,7 @@ void registerControllerHotkeys(HWND hwnd, HWND statusLabel) {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
-        CreateWindowExW(0, L"STATIC", L"Process", WS_CHILD | WS_VISIBLE, 12, 12, 120, 20, hwnd, nullptr, nullptr, nullptr);
+        CreateWindowExW(0, L"STATIC", L"Process", WS_CHILD | WS_VISIBLE, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
         RECT rcClient{};
         GetClientRect(hwnd, &rcClient);
         int initialWidth = rcClient.right - 120 - 120 - 12 * 3;
@@ -433,16 +491,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HWND launch = CreateWindowExW(0, L"BUTTON", L"Launch + Hook", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                       0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLaunchButtonId)), nullptr, nullptr);
 
-        g_speedLabel = CreateWindowExW(0, L"STATIC", L"Speed (0.5-2.3)", WS_CHILD | WS_VISIBLE, 12, 68, 120, 20, hwnd, nullptr, nullptr, nullptr);
+        g_speedLabel = CreateWindowExW(0, L"STATIC", L"Speed (0.5-2.3)", WS_CHILD | WS_VISIBLE, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
         wchar_t speedText[32] = {};
         swprintf_s(speedText, L"%.2f", g_state.speed.currentSpeed);
         HWND speedEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", speedText,
                                          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                         140, 66, 80, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
+                                         140, 66, 40, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeedEditId)), nullptr, nullptr);
         HWND ignoreBgm = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                         140 + 80 + 12 + 90, 66, 20, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmCheckId)), nullptr, nullptr);
+                                         140 + 40 + 12 + 90, 66, 20, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmCheckId)), nullptr, nullptr);
         HWND ignoreBgmLabel = CreateWindowExW(0, L"STATIC", L"Process BGM", WS_CHILD | WS_VISIBLE,
-                                              140 + 80 + 12, 66, 90, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmLabelId)), nullptr, nullptr);
+                                              140 + 40 + 12, 66, 90, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIgnoreBgmLabelId)), nullptr, nullptr);
+        g_autoHookLabel = CreateWindowExW(0, L"STATIC", L"Auto-Hook This App",
+                                          WS_CHILD | WS_VISIBLE,
+                                          140 + 40 + 12 + 90 + 20 + 12, 66, 135, 20,
+                                          hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookLabelId)), nullptr, nullptr);
+        g_autoHookCheck = CreateWindowExW(0, L"BUTTON", L"",
+                                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                          140 + 40 + 12 + 90 + 20 + 12 + 135 + 6, 66, 20, 20,
+                                          hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookCheckId)), nullptr, nullptr);
         if (ignoreBgm) {
             SendMessageW(ignoreBgm, BM_SETCHECK, g_state.processAllAudio ? BST_CHECKED : BST_UNCHECKED, 0);
         }
@@ -471,6 +537,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
         layoutControls(hwnd);
         refreshProcessList(combo, GetDlgItem(hwnd, kStatusLabelId));
+        updateAutoHookCheckbox(hwnd);
         registerControllerHotkeys(hwnd, GetDlgItem(hwnd, kStatusLabelId));
 
         HWND tooltip = createTooltip(hwnd);
@@ -511,6 +578,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
             if (bestIdx >= 0) {
                 SendMessageW(combo, CB_SETCURSEL, bestIdx, 0);
+                updateAutoHookCheckbox(hwnd);
                 const auto &p = g_state.processes[static_cast<size_t>(bestIdx)];
                 std::wstring msg = L"Auto-selected [" + std::to_wstring(p.pid) + L"] " + p.name + L" via --search \"" + g_state.searchTerm + L"\"";
                 setStatus(statusLabel, msg);
@@ -531,10 +599,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         const WORD id = LOWORD(wParam);
         if (id == kRefreshButtonId && HIWORD(wParam) == BN_CLICKED) {
             refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId));
+            updateAutoHookCheckbox(hwnd);
         } else if (id == kApplyButtonId && HIWORD(wParam) == BN_CLICKED) {
             handleApply(hwnd);
         } else if (id == kLaunchButtonId && HIWORD(wParam) == BN_CLICKED) {
             handleLaunch(hwnd);
+        } else if (id == kProcessComboId && HIWORD(wParam) == CBN_SELCHANGE) {
+            updateAutoHookCheckbox(hwnd);
+        } else if (id == kAutoHookCheckId && HIWORD(wParam) == BN_CLICKED) {
+            handleAutoHookToggle(hwnd);
         } else if (id == kLinkId && HIWORD(wParam) == STN_CLICKED) {
             ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
         }

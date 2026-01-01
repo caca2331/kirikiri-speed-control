@@ -11,6 +11,7 @@
 #include <mutex>
 #include <cmath>
 #include <cwchar>
+#include <sstream>
 
 namespace krkrspeed::controller {
 namespace {
@@ -127,6 +128,97 @@ std::vector<std::wstring> buildShortAndLongPaths(const std::filesystem::path &p)
 // Keep shared setting mappings alive so the target process can open them after we return.
 std::unordered_map<DWORD, HANDLE> g_sharedMappings;
 std::mutex g_sharedMutex;
+std::vector<AutoHookEntry> g_autoHookEntries;
+std::mutex g_autoHookMutex;
+
+constexpr wchar_t kAutoHookConfigName[] = L"krkr_speed_config.yaml";
+
+std::string toUtf8(const std::wstring &wstr) {
+    if (wstr.empty()) return {};
+    const int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (sizeNeeded <= 0) return {};
+    std::string result(static_cast<size_t>(sizeNeeded), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), result.data(), sizeNeeded, nullptr, nullptr);
+    return result;
+}
+
+std::wstring fromUtf8(const std::string &str) {
+    if (str.empty()) return {};
+    const int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), nullptr, 0);
+    if (sizeNeeded <= 0) return {};
+    std::wstring result(static_cast<size_t>(sizeNeeded), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), result.data(), sizeNeeded);
+    return result;
+}
+
+std::string trimCopy(const std::string &s) {
+    const auto start = s.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return {};
+    const auto end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+std::string unescapeYamlString(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    bool escape = false;
+    for (char c : s) {
+        if (escape) {
+            out.push_back(c);
+            escape = false;
+            continue;
+        }
+        if (c == '\\') {
+            escape = true;
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string escapeYamlString(const std::wstring &value) {
+    std::string utf8 = toUtf8(value);
+    std::string out;
+    out.reserve(utf8.size());
+    for (char c : utf8) {
+        if (c == '\\' || c == '"') {
+            out.push_back('\\');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+bool matchAutoHookEntry(const AutoHookEntry &entry, const std::wstring &exePath, const std::wstring &exeName) {
+    return _wcsicmp(entry.exePath.c_str(), exePath.c_str()) == 0 &&
+           _wcsicmp(entry.exeName.c_str(), exeName.c_str()) == 0;
+}
+
+std::filesystem::path autoHookConfigPath() {
+    const auto dir = controllerDirectory();
+    if (dir.empty()) return {};
+    return dir / kAutoHookConfigName;
+}
+
+bool saveAutoHookConfig(std::wstring &error) {
+    const auto path = autoHookConfigPath();
+    if (path.empty()) {
+        error = L"Unable to resolve controller directory for config.";
+        return false;
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        error = L"Unable to write config: " + path.wstring();
+        return false;
+    }
+    out << "auto_hook:\n";
+    for (const auto &entry : g_autoHookEntries) {
+        out << "  - name: \"" << escapeYamlString(entry.exeName) << "\"\n";
+        out << "    path: \"" << escapeYamlString(entry.exePath) << "\"\n";
+    }
+    return true;
+}
 
 } // namespace
 
@@ -149,6 +241,93 @@ std::wstring describeArch(ProcessArch arch) {
     case ProcessArch::Arm64: return L"ARM64";
     default: return L"unknown";
     }
+}
+
+void loadAutoHookConfig() {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    g_autoHookEntries.clear();
+    const auto path = autoHookConfigPath();
+    if (path.empty() || !std::filesystem::exists(path)) {
+        return;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const std::string contents = buffer.str();
+    std::istringstream lines(contents);
+
+    bool inList = false;
+    AutoHookEntry current{};
+    bool hasName = false;
+    bool hasPath = false;
+
+    auto flush = [&]() {
+        if (hasName && hasPath) {
+            g_autoHookEntries.push_back(current);
+        }
+        current = AutoHookEntry{};
+        hasName = false;
+        hasPath = false;
+    };
+
+    std::string line;
+    while (std::getline(lines, line)) {
+        std::string trimmed = trimCopy(line);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+        if (trimmed.rfind("auto_hook", 0) == 0) {
+            inList = true;
+            continue;
+        }
+        if (!inList) continue;
+        if (trimmed[0] == '-') {
+            flush();
+            trimmed = trimCopy(trimmed.substr(1));
+            if (trimmed.empty()) continue;
+        }
+        const auto colon = trimmed.find(':');
+        if (colon == std::string::npos) continue;
+        std::string key = trimCopy(trimmed.substr(0, colon));
+        std::string value = trimCopy(trimmed.substr(colon + 1));
+        if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+            value = value.substr(1, value.size() - 2);
+        }
+        if (key == "name") {
+            current.exeName = fromUtf8(unescapeYamlString(value));
+            hasName = !current.exeName.empty();
+        } else if (key == "path") {
+            current.exePath = fromUtf8(unescapeYamlString(value));
+            hasPath = !current.exePath.empty();
+        }
+    }
+    flush();
+}
+
+bool isAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName) {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    for (const auto &entry : g_autoHookEntries) {
+        if (matchAutoHookEntry(entry, exePath, exeName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error) {
+    if (exePath.empty() || exeName.empty()) {
+        error = L"Invalid exe path/name.";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    auto it = std::remove_if(g_autoHookEntries.begin(), g_autoHookEntries.end(),
+                             [&](const AutoHookEntry &entry) { return matchAutoHookEntry(entry, exePath, exeName); });
+    g_autoHookEntries.erase(it, g_autoHookEntries.end());
+    if (enabled) {
+        g_autoHookEntries.push_back(AutoHookEntry{exeName, exePath});
+    }
+    return saveAutoHookConfig(error);
 }
 
 float clampSpeed(float speed) {
@@ -372,6 +551,24 @@ bool queryProcessArch(DWORD pid, ProcessArch &archOut, std::wstring &error) {
     error = L"Unable to query process architecture (error " + std::to_wstring(GetLastError()) + L")";
     CloseHandle(process);
     return false;
+}
+
+bool getProcessExePath(DWORD pid, std::wstring &pathOut, std::wstring &error) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) {
+        error = L"OpenProcess failed while reading path (error " + std::to_wstring(GetLastError()) + L")";
+        return false;
+    }
+    wchar_t buffer[MAX_PATH] = {};
+    DWORD size = static_cast<DWORD>(std::size(buffer));
+    if (QueryFullProcessImageNameW(process, 0, buffer, &size) == 0) {
+        CloseHandle(process);
+        error = L"QueryFullProcessImageNameW failed (error " + std::to_wstring(GetLastError()) + L")";
+        return false;
+    }
+    CloseHandle(process);
+    pathOut.assign(buffer, size);
+    return true;
 }
 
 bool getDllArch(const std::filesystem::path &path, ProcessArch &archOut, std::wstring &error) {
