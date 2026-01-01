@@ -17,6 +17,7 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <unordered_set>
 #include <limits>
 
@@ -58,6 +59,9 @@ void updateHookButtonState(HWND hwnd);
 bool pruneHookedPids(const std::unordered_set<DWORD> &current);
 void ensureUiTextLoaded();
 void refreshUiText(HWND hwnd);
+void updateTooltips();
+void updateTrackedTooltip(const MSG &msg);
+TOOLINFOW makeToolInfo(HWND control, UiTextId textId);
 
 void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
     if (!combo || !statusLabel) return;
@@ -101,6 +105,9 @@ static HWND g_autoHookLabel = nullptr;
 static HWND g_ignoreBgmLabel = nullptr;
 static HWND g_languageCombo = nullptr;
 static HWND g_tooltip = nullptr;
+static std::unordered_map<std::uintptr_t, UiTextId> g_tooltipById;
+static HWND g_mainWindow = nullptr;
+static HWND g_activeTooltipControl = nullptr;
 static std::unordered_set<DWORD> g_knownPids;
 static std::unordered_set<DWORD> g_autoHookAttempted;
 static std::unordered_set<DWORD> g_hookedPids;
@@ -156,6 +163,7 @@ void refreshUiText(HWND hwnd) {
         SetWindowTextW(launchButton, ui_text::UiText(UiTextId::ButtonLaunchHook).c_str());
     }
     updateHookButtonState(hwnd);
+    updateTooltips();
 
 }
 
@@ -785,25 +793,116 @@ void layoutControls(HWND hwnd) {
 HWND createTooltip(HWND parent) {
     HWND tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
                                    WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-                                   parent, nullptr, nullptr, nullptr);
+                                   parent, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (tooltip) {
         SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
+        SendMessageW(tooltip, TTM_ACTIVATE, TRUE, 0);
         SetWindowPos(tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    } else {
+        KRKR_LOG_WARN("Tooltip create failed err=" + std::to_string(GetLastError()));
     }
     return tooltip;
+}
+
+TOOLINFOW makeToolInfo(HWND control, UiTextId textId) {
+    TOOLINFOW ti{};
+    #ifdef TTTOOLINFOW_V1_SIZE
+    ti.cbSize = TTTOOLINFOW_V1_SIZE;
+    #else
+    ti.cbSize = sizeof(ti);
+    #endif
+    ti.uFlags = TTF_IDISHWND | TTF_TRACK | TTF_ABSOLUTE;
+    ti.hwnd = GetParent(control);
+    ti.uId = reinterpret_cast<UINT_PTR>(control);
+    ti.lpszText = const_cast<wchar_t *>(ui_text::UiText(textId).c_str());
+    return ti;
 }
 
 void addTooltip(HWND tooltip, HWND control, UiTextId textId) {
     if (!tooltip || !control) return;
 
-    TOOLINFOW ti{};
-    ti.cbSize = sizeof(ti);
-    ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-    ti.hwnd = GetParent(control);
-    ti.uId = reinterpret_cast<UINT_PTR>(control);
-    ti.lpszText = LPSTR_TEXTCALLBACKW;
-    ti.lParam = static_cast<LPARAM>(textId);
-    SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+    const auto key = reinterpret_cast<std::uintptr_t>(control);
+    g_tooltipById[key] = textId;
+
+    TOOLINFOW ti = makeToolInfo(control, textId);
+    if (!SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti))) {
+        KRKR_LOG_WARN("Tooltip add failed for control=" + std::to_string(key) +
+                      " err=" + std::to_string(GetLastError()));
+    }
+}
+
+void updateTooltips() {
+    if (!g_tooltip) return;
+    for (const auto &kv : g_tooltipById) {
+        HWND control = reinterpret_cast<HWND>(kv.first);
+        if (!IsWindow(control)) {
+            continue;
+        }
+        TOOLINFOW ti = makeToolInfo(control, kv.second);
+        SendMessageW(g_tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
+    }
+}
+
+void updateTrackedTooltip(const MSG &msg) {
+    if (!g_tooltip || msg.hwnd == g_tooltip) return;
+    if (msg.message == WM_MOUSELEAVE) {
+        if (g_activeTooltipControl && msg.hwnd == g_activeTooltipControl) {
+            auto it = g_tooltipById.find(reinterpret_cast<std::uintptr_t>(g_activeTooltipControl));
+            if (it != g_tooltipById.end()) {
+                TOOLINFOW ti = makeToolInfo(g_activeTooltipControl, it->second);
+                SendMessageW(g_tooltip, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&ti));
+            }
+            g_activeTooltipControl = nullptr;
+        }
+        return;
+    }
+    if (msg.message < WM_MOUSEFIRST || msg.message > WM_MOUSELAST) {
+        return;
+    }
+
+    HWND target = msg.hwnd;
+    while (target && target != g_mainWindow) {
+        if (g_tooltipById.find(reinterpret_cast<std::uintptr_t>(target)) != g_tooltipById.end()) {
+            break;
+        }
+        target = GetParent(target);
+    }
+    if (target == g_mainWindow) {
+        target = nullptr;
+    }
+
+    if (target != g_activeTooltipControl) {
+        if (g_activeTooltipControl) {
+            auto itPrev = g_tooltipById.find(reinterpret_cast<std::uintptr_t>(g_activeTooltipControl));
+            if (itPrev != g_tooltipById.end()) {
+                TOOLINFOW ti = makeToolInfo(g_activeTooltipControl, itPrev->second);
+                SendMessageW(g_tooltip, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&ti));
+            }
+        }
+        g_activeTooltipControl = target;
+        if (!g_activeTooltipControl) {
+            return;
+        }
+    }
+
+    if (g_activeTooltipControl) {
+        auto it = g_tooltipById.find(reinterpret_cast<std::uintptr_t>(g_activeTooltipControl));
+        if (it == g_tooltipById.end()) {
+            return;
+        }
+        TOOLINFOW ti = makeToolInfo(g_activeTooltipControl, it->second);
+        SendMessageW(g_tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
+        const int x = msg.pt.x + 12;
+        const int y = msg.pt.y + 18;
+        SendMessageW(g_tooltip, TTM_TRACKPOSITION, 0, MAKELPARAM(x, y));
+        SendMessageW(g_tooltip, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&ti));
+
+        TRACKMOUSEEVENT tme{};
+        tme.cbSize = sizeof(tme);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = g_activeTooltipControl;
+        TrackMouseEvent(&tme);
+    }
 }
 
 bool registerHotkey(HWND hwnd, int id, UINT vk) {
@@ -828,6 +927,7 @@ void registerControllerHotkeys(HWND hwnd, HWND statusLabel) {
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
+        g_mainWindow = hwnd;
         ensureUiTextLoaded();
         RECT rcClient{};
         GetClientRect(hwnd, &rcClient);
@@ -1085,12 +1185,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     case WM_NOTIFY: {
         auto *hdr = reinterpret_cast<NMHDR *>(lParam);
-        if (hdr && hdr->code == TTN_GETDISPINFOW) {
-            auto *info = reinterpret_cast<NMTTDISPINFOW *>(lParam);
-            const auto id = static_cast<UiTextId>(info->lParam);
-            info->lpszText = const_cast<wchar_t *>(ui_text::UiText(id).c_str());
-            return 0;
-        }
         if (hdr && hdr->idFrom == kLinkId && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
             ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
             return 0;
@@ -1102,6 +1196,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         UnregisterHotKey(hwnd, kHotkeyToggleSpeedId);
         UnregisterHotKey(hwnd, kHotkeySpeedUpId);
         UnregisterHotKey(hwnd, kHotkeySpeedDownId);
+        g_activeTooltipControl = nullptr;
+        g_mainWindow = nullptr;
         KRKR_LOG_INFO("KrkrSpeedController window destroyed, exiting.");
         PostQuitMessage(0);
         break;
@@ -1162,6 +1258,7 @@ int runController(HINSTANCE hInstance, int nCmdShow) {
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0)) {
+        updateTrackedTooltip(msg);
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
