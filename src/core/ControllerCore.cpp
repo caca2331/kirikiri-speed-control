@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cwchar>
 #include <sstream>
+#include <iomanip>
 
 namespace krkrspeed::controller {
 namespace {
@@ -198,6 +199,22 @@ std::string escapeYamlString(const std::wstring &value) {
     return out;
 }
 
+std::string formatDelaySeconds(double seconds) {
+    if (!std::isfinite(seconds)) {
+        return "0.0";
+    }
+    const double rounded = std::round(seconds);
+    std::ostringstream out;
+    if (std::fabs(seconds - rounded) < 0.0001) {
+        out.setf(std::ios::fixed);
+        out << std::setprecision(1) << seconds;
+    } else {
+        out.setf(std::ios::fixed);
+        out << std::setprecision(3) << seconds;
+    }
+    return out.str();
+}
+
 bool matchAutoHookEntry(const AutoHookEntry &entry, const std::wstring &exePath, const std::wstring &exeName) {
     return _wcsicmp(entry.exePath.c_str(), exePath.c_str()) == 0 &&
            _wcsicmp(entry.exeName.c_str(), exeName.c_str()) == 0;
@@ -224,6 +241,9 @@ bool saveAutoHookConfig(std::wstring &error) {
     for (const auto &entry : g_autoHookEntries) {
         out << "  - name: \"" << escapeYamlString(entry.exeName) << "\"\n";
         out << "    path: \"" << escapeYamlString(entry.exePath) << "\"\n";
+        if (entry.hasDelay && entry.delaySeconds > 0.0) {
+            out << "    delay: " << formatDelaySeconds(entry.delaySeconds) << "\n";
+        }
     }
     out << "process_bgm:\n";
     for (const auto &entry : g_processBgmEntries) {
@@ -320,6 +340,19 @@ void loadAutoHookConfig() {
         } else if (key == "path") {
             current.exePath = fromUtf8(unescapeYamlString(value));
             hasPath = !current.exePath.empty();
+        } else if (key == "delay" && activeList == &g_autoHookEntries) {
+            try {
+                const double parsed = std::stod(value);
+                if (parsed > 0.0) {
+                    current.delaySeconds = parsed;
+                    current.hasDelay = true;
+                } else {
+                    current.delaySeconds = 0.0;
+                    current.hasDelay = false;
+                }
+            } catch (...) {
+                // Ignore malformed delay values.
+            }
         }
     }
     flush();
@@ -353,6 +386,48 @@ bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName
 std::size_t autoHookEntryCount() {
     std::lock_guard<std::mutex> lock(g_autoHookMutex);
     return g_autoHookEntries.size();
+}
+
+bool tryGetAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, double &outDelaySeconds) {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    for (const auto &entry : g_autoHookEntries) {
+        if (matchAutoHookEntry(entry, exePath, exeName) && entry.hasDelay && entry.delaySeconds > 0.0) {
+            outDelaySeconds = entry.delaySeconds;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool setAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, bool enabled, double delaySeconds,
+                      std::wstring &error) {
+    if (exePath.empty() || exeName.empty()) {
+        error = L"Invalid exe path/name.";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    auto it = std::find_if(g_autoHookEntries.begin(), g_autoHookEntries.end(),
+                           [&](const AutoHookEntry &entry) { return matchAutoHookEntry(entry, exePath, exeName); });
+    if (it == g_autoHookEntries.end()) {
+        if (!enabled) {
+            return true;
+        }
+        AutoHookEntry entry{exeName, exePath};
+        if (enabled && delaySeconds > 0.0) {
+            entry.hasDelay = true;
+            entry.delaySeconds = delaySeconds;
+        }
+        g_autoHookEntries.push_back(std::move(entry));
+    } else {
+        if (enabled && delaySeconds > 0.0) {
+            it->hasDelay = true;
+            it->delaySeconds = delaySeconds;
+        } else {
+            it->hasDelay = false;
+            it->delaySeconds = 0.0;
+        }
+    }
+    return saveAutoHookConfig(error);
 }
 
 bool isProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName) {

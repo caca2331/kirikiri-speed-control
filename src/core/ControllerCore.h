@@ -39,6 +39,8 @@ struct SharedConfig {
 struct AutoHookEntry {
     std::wstring exeName;
     std::wstring exePath;
+    bool hasDelay = false;
+    double delaySeconds = 0.0;
 };
 
 struct SpeedControlState {
@@ -72,6 +74,9 @@ void loadAutoHookConfig();
 bool isAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
 std::size_t autoHookEntryCount();
+bool tryGetAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, double &outDelaySeconds);
+bool setAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, bool enabled, double delaySeconds,
+                      std::wstring &error);
 bool isProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setProcessBgmEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
 std::size_t processBgmEntryCount();

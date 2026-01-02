@@ -15,6 +15,7 @@ enum class UiTextId {
     LabelSpeed,
     LabelProcessBgm,
     LabelAutoHook,
+    LabelAutoHookDelay,
     LabelHotkey,
     LinkMarkup,
     LinkPlain,
@@ -25,6 +26,7 @@ enum class UiTextId {
     TooltipSpeedEdit,
     TooltipProcessBgm,
     TooltipAutoHook,
+    TooltipAutoHookDelay,
     TooltipHotkey
 };
 

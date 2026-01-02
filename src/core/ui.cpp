@@ -36,6 +36,8 @@ constexpr int kIgnoreBgmLabelId = 1010;
 constexpr int kAutoHookCheckId = 1011;
 constexpr int kAutoHookLabelId = 1012;
 constexpr int kLanguageComboId = 1013;
+constexpr int kAutoHookDelayCheckId = 1014;
+constexpr int kAutoHookDelayLabelId = 1015;
 constexpr UINT kAutoHookTimerId = 3001;
 constexpr UINT kAutoHookIntervalMs = 1000;
 constexpr UINT kMsgAutoSelectPid = WM_APP + 2;
@@ -56,6 +58,7 @@ void refreshProcessList(HWND combo, HWND statusLabel, bool quiet);
 controller::SharedConfig buildSharedConfig(float speed);
 void updateAutoHookCheckbox(HWND hwnd);
 void updateProcessBgmCheckbox(HWND hwnd);
+void updateAutoHookDelayControls(HWND hwnd);
 void updateHookButtonState(HWND hwnd);
 bool pruneHookedPids(const std::unordered_set<DWORD> &current);
 void ensureUiTextLoaded();
@@ -65,6 +68,7 @@ void updateTrackedTooltip(const MSG &msg);
 TOOLINFOW makeToolInfo(HWND control, UiTextId textId);
 int getTextHeight(HWND hwnd, int fallback);
 HFONT createHotkeyFont(HWND reference);
+void handleAutoHookDelayToggle(HWND hwnd);
 
 void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
     if (!combo || !statusLabel) return;
@@ -106,6 +110,8 @@ static HWND g_pathLabel = nullptr;
 static HWND g_speedLabel = nullptr;
 static HWND g_autoHookCheck = nullptr;
 static HWND g_autoHookLabel = nullptr;
+static HWND g_autoHookDelayCheck = nullptr;
+static HWND g_autoHookDelayLabel = nullptr;
 static HWND g_ignoreBgmLabel = nullptr;
 static HWND g_languageCombo = nullptr;
 static HWND g_hotkeyLabel = nullptr;
@@ -156,6 +162,9 @@ void refreshUiText(HWND hwnd) {
     }
     if (g_autoHookLabel) {
         SetWindowTextW(g_autoHookLabel, ui_text::UiText(UiTextId::LabelAutoHook).c_str());
+    }
+    if (g_autoHookDelayLabel) {
+        SetWindowTextW(g_autoHookDelayLabel, ui_text::UiText(UiTextId::LabelAutoHookDelay).c_str());
     }
     if (g_hotkeyLabel) {
         SetWindowTextW(g_hotkeyLabel, ui_text::UiText(UiTextId::LabelHotkey).c_str());
@@ -222,15 +231,18 @@ void updateAutoHookCheckbox(HWND hwnd) {
     std::wstring error;
     if (!getSelectedProcess(hwnd, proc, error)) {
         SendMessageW(g_autoHookCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        updateAutoHookDelayControls(hwnd);
         return;
     }
     std::wstring exePath;
     if (!controller::getProcessExePath(proc.pid, exePath, error)) {
         SendMessageW(g_autoHookCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        updateAutoHookDelayControls(hwnd);
         return;
     }
     const bool enabled = controller::isAutoHookEnabled(exePath, proc.name);
     SendMessageW(g_autoHookCheck, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    updateAutoHookDelayControls(hwnd);
 }
 
 void updateProcessBgmCheckbox(HWND hwnd) {
@@ -252,6 +264,32 @@ void updateProcessBgmCheckbox(HWND hwnd) {
     const bool enabled = controller::isProcessBgmEnabled(exePath, proc.name);
     SendMessageW(ignoreBgm, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     g_state.processAllAudio = enabled;
+}
+
+void updateAutoHookDelayControls(HWND hwnd) {
+    if (!g_autoHookDelayLabel || !g_autoHookDelayCheck) return;
+    const bool autoHookEnabled =
+        g_autoHookCheck && (SendMessageW(g_autoHookCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    ShowWindow(g_autoHookDelayLabel, autoHookEnabled ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_autoHookDelayCheck, autoHookEnabled ? SW_SHOW : SW_HIDE);
+    if (!autoHookEnabled) {
+        SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        return;
+    }
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        return;
+    }
+    std::wstring exePath;
+    if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+        SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+        return;
+    }
+    double delaySeconds = 0.0;
+    const bool hasDelay = controller::tryGetAutoHookDelay(exePath, proc.name, delaySeconds);
+    SendMessageW(g_autoHookDelayCheck, BM_SETCHECK, hasDelay ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void updateHookButtonState(HWND hwnd) {
@@ -357,8 +395,13 @@ bool pruneHookedPids(const std::unordered_set<DWORD> &current) {
     return removed;
 }
 
-void scheduleAutoHook(HWND hwnd, const ProcessInfo &proc, controller::SharedConfig cfg) {
-    std::thread([hwnd, proc, cfg]() {
+void scheduleAutoHook(HWND hwnd, const ProcessInfo &proc, controller::SharedConfig cfg, double delaySeconds) {
+    std::thread([hwnd, proc, cfg, delaySeconds]() {
+        if (delaySeconds > 0.0) {
+            KRKR_LOG_INFO("Auto-hook delay " + std::to_string(delaySeconds) +
+                          "s for pid=" + std::to_string(proc.pid));
+            std::this_thread::sleep_for(std::chrono::duration<double>(delaySeconds));
+        }
         std::wstring err;
         controller::ProcessArch targetArch = controller::ProcessArch::Unknown;
         if (!controller::queryProcessArch(proc.pid, targetArch, err)) {
@@ -488,8 +531,10 @@ void pollAutoHook(HWND hwnd) {
         }
         controller::SharedConfig procCfg = cfg;
         procCfg.processAllAudio = controller::isProcessBgmEnabled(exePath, proc.name);
+        double delaySeconds = 0.0;
+        controller::tryGetAutoHookDelay(exePath, proc.name, delaySeconds);
         g_autoHookAttempted.insert(proc.pid);
-        scheduleAutoHook(hwnd, proc, procCfg);
+        scheduleAutoHook(hwnd, proc, procCfg, delaySeconds);
     }
 }
 
@@ -518,6 +563,32 @@ void handleAutoHookToggle(HWND hwnd) {
     if (controller::autoHookEntryCount() > 0) {
         initKnownPids();
     }
+    updateAutoHookDelayControls(hwnd);
+}
+
+void handleAutoHookDelayToggle(HWND hwnd) {
+    if (!g_autoHookDelayCheck) return;
+    HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
+    ProcessInfo proc;
+    std::wstring error;
+    if (!getSelectedProcess(hwnd, proc, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    std::wstring exePath;
+    if (!controller::getProcessExePath(proc.pid, exePath, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    const bool checked = (SendMessageW(g_autoHookDelayCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    const double delaySeconds = checked ? 15.0 : 0.0;
+    if (!controller::setAutoHookDelay(exePath, proc.name, checked, delaySeconds, error)) {
+        setStatus(statusLabel, error);
+        return;
+    }
+    std::wstring msg = checked ? (L"Auto-hook delay enabled for " + proc.name)
+                               : (L"Auto-hook delay disabled for " + proc.name);
+    setStatus(statusLabel, msg);
 }
 
 void handleProcessBgmToggle(HWND hwnd) {
@@ -784,22 +855,29 @@ void layoutControls(HWND hwnd) {
     RECT rc;
     GetClientRect(hwnd, &rc);
     const int padding = 12;
-    const int labelWidth = 100;
+    const int labelWidth = 95;
     const int comboHeight = 24;
     const int editWidth = 40;
     const int buttonWidth = 120;
     const int wideEditWidth = rc.right - labelWidth - buttonWidth - padding * 3;
     const int rowHeight = 28;
     const int checkboxHeight = 20;
+    const int checkboxWidth = 20;
     const int statusHeight = comboHeight * 2;
 
     int x = padding;
     int y = padding;
 
-    SetWindowPos(GetDlgItem(hwnd, kProcessComboId), nullptr, x + labelWidth, y, rc.right - labelWidth - buttonWidth - padding * 3,
-                 comboHeight, SWP_NOZORDER);
+    int comboWidth = static_cast<int>(rc.right) - labelWidth - buttonWidth - padding * 3 + 5;
+    if (comboWidth < 0) {
+        comboWidth = 0;
+    }
+    SetWindowPos(GetDlgItem(hwnd, kProcessComboId), nullptr, x + labelWidth, y, comboWidth, comboHeight, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(hwnd, kRefreshButtonId), nullptr, rc.right - buttonWidth - padding, y, buttonWidth, comboHeight,
                  SWP_NOZORDER);
+    if (g_processLabel) {
+        SetWindowPos(g_processLabel, nullptr, x, y + 2, labelWidth, comboHeight, SWP_NOZORDER);
+    }
 
     // TEMP: hide launch-by-path row (keep controls created for easy restore). Move offscreen.
     if (g_pathLabel) {
@@ -817,15 +895,27 @@ void layoutControls(HWND hwnd) {
     // Place ignore-BGM label and checkbox together
     SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmLabelId), nullptr, x + labelWidth + editWidth + padding, y + 2, 90, checkboxHeight,
                  SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelWidth + editWidth + padding + 94, y, 20, checkboxHeight,
+    SetWindowPos(GetDlgItem(hwnd, kIgnoreBgmCheckId), nullptr, x + labelWidth + editWidth + padding + 94, y, checkboxWidth, checkboxHeight,
                  SWP_NOZORDER);
     if (g_autoHookLabel) {
-        const int autoHookX = x + labelWidth + editWidth + padding + 94 + 20 + padding;
-        const int autoHookLabelWidth = 135;
+        const int autoHookGap = 10;
+        const int innerGap = 6;
+        const int delayGap = 10;
+        const int autoHookX = x + labelWidth + editWidth + padding + 94 + checkboxWidth + autoHookGap;
+        const int autoHookLabelWidth = 130;
         SetWindowPos(g_autoHookLabel, nullptr, autoHookX, y + 2, autoHookLabelWidth, checkboxHeight, SWP_NOZORDER);
         if (g_autoHookCheck) {
-            const int autoHookCheckX = autoHookX + autoHookLabelWidth + 6;
-            SetWindowPos(g_autoHookCheck, nullptr, autoHookCheckX, y, 20, checkboxHeight, SWP_NOZORDER);
+            const int autoHookCheckX = autoHookX + autoHookLabelWidth + innerGap;
+            SetWindowPos(g_autoHookCheck, nullptr, autoHookCheckX, y, checkboxWidth, checkboxHeight, SWP_NOZORDER);
+            if (g_autoHookDelayLabel) {
+                const int delayLabelWidth = 125;
+                const int delayCheckX = rc.right - padding - checkboxWidth;
+                const int delayLabelX = delayCheckX - delayGap - delayLabelWidth;
+                SetWindowPos(g_autoHookDelayLabel, nullptr, delayLabelX, y + 2, delayLabelWidth, checkboxHeight, SWP_NOZORDER);
+                if (g_autoHookDelayCheck) {
+                    SetWindowPos(g_autoHookDelayCheck, nullptr, delayCheckX, y, checkboxWidth, checkboxHeight, SWP_NOZORDER);
+                }
+            }
         }
     }
     // Hook + Apply button removed; "Hook" button handles injection.
@@ -1116,6 +1206,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                           WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                           140 + 40 + 12 + 90 + 20 + 12 + 135 + 6, 66, 20, 20,
                                           hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookCheckId)), nullptr, nullptr);
+        g_autoHookDelayLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelAutoHookDelay).c_str(),
+                                               WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                                               140 + 40 + 12 + 90 + 20 + 12 + 135 + 6 + 20 + 12, 66, 140, 20,
+                                               hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookDelayLabelId)), nullptr, nullptr);
+        g_autoHookDelayCheck = CreateWindowExW(0, L"BUTTON", L"",
+                                               WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                               140 + 40 + 12 + 90 + 20 + 12 + 135 + 6 + 20 + 12 + 140 + 6, 66, 20, 20,
+                                               hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAutoHookDelayCheckId)), nullptr, nullptr);
         g_languageCombo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", nullptr,
                                           WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
                                           0, 66, 120, 200,
@@ -1189,6 +1287,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         addTooltip(g_tooltip, g_ignoreBgmLabel, UiTextId::TooltipProcessBgm);
         addTooltip(g_tooltip, g_autoHookCheck, UiTextId::TooltipAutoHook);
         addTooltip(g_tooltip, g_autoHookLabel, UiTextId::TooltipAutoHook);
+        addTooltip(g_tooltip, g_autoHookDelayCheck, UiTextId::TooltipAutoHookDelay);
+        addTooltip(g_tooltip, g_autoHookDelayLabel, UiTextId::TooltipAutoHookDelay);
         addTooltip(g_tooltip, g_hotkeyLabel, UiTextId::TooltipHotkey);
         // Hook + Apply tooltip removed with button.
 
@@ -1275,8 +1375,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             applySettingsToSelectedIfHooked(hwnd);
         } else if (id == kAutoHookCheckId && HIWORD(wParam) == BN_CLICKED) {
             handleAutoHookToggle(hwnd);
+        } else if (id == kAutoHookDelayCheckId && HIWORD(wParam) == BN_CLICKED) {
+            handleAutoHookDelayToggle(hwnd);
         } else if (id == kLinkId && HIWORD(wParam) == STN_CLICKED) {
-            ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
+            ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-controller", nullptr, nullptr, SW_SHOWNORMAL);
         }
         break;
     }
@@ -1354,7 +1456,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     case WM_NOTIFY: {
         auto *hdr = reinterpret_cast<NMHDR *>(lParam);
         if (hdr && hdr->idFrom == kLinkId && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
-            ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-control", nullptr, nullptr, SW_SHOWNORMAL);
+            ShellExecuteW(hwnd, L"open", L"https://github.com/caca2331/kirikiri-speed-controller", nullptr, nullptr, SW_SHOWNORMAL);
             return 0;
         }
         break;

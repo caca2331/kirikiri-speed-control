@@ -39,10 +39,11 @@ const KeyEntry kEntries[] = {
     {UiTextId::LabelSpeed, "label.speed", L"Speed (0.5-2.3)"},
     {UiTextId::LabelProcessBgm, "label.process_bgm", L"Process BGM"},
     {UiTextId::LabelAutoHook, "label.auto_hook", L"Auto-Hook This App"},
+    {UiTextId::LabelAutoHookDelay, "label.auto_hook_delay", L"Delayed Auto-Hook"},
     {UiTextId::LabelHotkey, "label.hotkey", L"Hotkey"},
     {UiTextId::LinkMarkup, "link.markup",
-     L"<a href=\"https://github.com/caca2331/kirikiri-speed-control\">GitHub: kirikiri-speed-control</a>"},
-    {UiTextId::LinkPlain, "link.plain", L"GitHub: https://github.com/caca2331/kirikiri-speed-control"},
+     L"<a href=\"https://github.com/caca2331/kirikiri-speed-controller\">GitHub: kirikiri-speed-controller</a>"},
+    {UiTextId::LinkPlain, "link.plain", L"GitHub: https://github.com/caca2331/kirikiri-speed-controller"},
     {UiTextId::TooltipProcessCombo, "tooltip.process_combo", L"Select the game process to inject"},
     {UiTextId::TooltipHookButton, "tooltip.hook_button", L"Hook the selected process"},
     {UiTextId::TooltipPathEdit, "tooltip.path_edit",
@@ -54,6 +55,8 @@ const KeyEntry kEntries[] = {
      L"By default only changing speed of Voice.\nCheck to speed up all audios including BGM, or if voices fail to speed up"},
     {UiTextId::TooltipAutoHook, "tooltip.auto_hook",
      L"Check to auto-hook the selected app when it launches in the future. Uncheck to cancel."},
+    {UiTextId::TooltipAutoHookDelay, "tooltip.auto_hook_delay",
+     L"If auto-hook causes audio issues, enable to wait before auto-injecting."},
     {UiTextId::TooltipHotkey, "tooltip.hotkey",
      L"Alt + ' : Toggle speed\nAlt + ] : Speed up\nAlt + [ : Speed down"}
 };
