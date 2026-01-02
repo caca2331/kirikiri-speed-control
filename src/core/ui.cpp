@@ -29,8 +29,6 @@ constexpr int kRefreshButtonId = 1002;
 constexpr int kSpeedEditId = 1003;
 constexpr int kStatusLabelId = 1005;
 constexpr int kLinkId = 1006;
-constexpr int kPathEditId = 1007;
-constexpr int kLaunchButtonId = 1008;
 constexpr int kIgnoreBgmCheckId = 1009;
 constexpr int kIgnoreBgmLabelId = 1010;
 constexpr int kAutoHookCheckId = 1011;
@@ -70,6 +68,15 @@ int getTextHeight(HWND hwnd, int fallback);
 HFONT createHotkeyFont(HWND reference);
 void handleAutoHookDelayToggle(HWND hwnd);
 
+std::wstring toLowerCopy(const std::wstring &input) {
+    std::wstring out;
+    out.reserve(input.size());
+    for (wchar_t c : input) {
+        out.push_back(static_cast<wchar_t>(std::towlower(c)));
+    }
+    return out;
+}
+
 void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
     if (!combo || !statusLabel) return;
     refreshProcessList(combo, statusLabel, true);
@@ -106,7 +113,6 @@ static HWND g_link = nullptr;
 static bool g_linkIsSysLink = false;
 static ControllerOptions g_initialOptions{};
 static HWND g_processLabel = nullptr;
-static HWND g_pathLabel = nullptr;
 static HWND g_speedLabel = nullptr;
 static HWND g_autoHookCheck = nullptr;
 static HWND g_autoHookLabel = nullptr;
@@ -151,9 +157,6 @@ void refreshUiText(HWND hwnd) {
     if (g_processLabel) {
         SetWindowTextW(g_processLabel, ui_text::UiText(UiTextId::LabelProcess).c_str());
     }
-    if (g_pathLabel) {
-        SetWindowTextW(g_pathLabel, ui_text::UiText(UiTextId::LabelGamePath).c_str());
-    }
     if (g_speedLabel) {
         SetWindowTextW(g_speedLabel, ui_text::UiText(UiTextId::LabelSpeed).c_str());
     }
@@ -176,10 +179,6 @@ void refreshUiText(HWND hwnd) {
     }
     SetWindowTextW(hwnd, ui_text::UiText(UiTextId::WindowTitle).c_str());
 
-    HWND launchButton = GetDlgItem(hwnd, kLaunchButtonId);
-    if (launchButton) {
-        SetWindowTextW(launchButton, ui_text::UiText(UiTextId::ButtonLaunchHook).c_str());
-    }
     updateHookButtonState(hwnd);
     updateTooltips();
 
@@ -519,8 +518,23 @@ void pollAutoHook(HWND hwnd) {
     const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
     controller::SharedConfig cfg = buildSharedConfig(effectiveSpeed);
 
+    std::unordered_set<std::wstring> autoHookNames;
+    {
+        const auto names = controller::autoHookExeNames();
+        autoHookNames.reserve(names.size());
+        for (const auto &name : names) {
+            autoHookNames.insert(toLowerCopy(name));
+        }
+    }
+
     for (const auto &proc : newProcesses) {
         if (g_autoHookAttempted.find(proc.pid) != g_autoHookAttempted.end()) continue;
+        if (!autoHookNames.empty()) {
+            const std::wstring nameLower = toLowerCopy(proc.name);
+            if (autoHookNames.find(nameLower) == autoHookNames.end()) {
+                continue;
+            }
+        }
         std::wstring exePath;
         std::wstring error;
         if (!controller::getProcessExePath(proc.pid, exePath, error)) {
@@ -797,15 +811,16 @@ void handleApply(HWND hwnd) {
 }
 
 void handleLaunch(HWND hwnd) {
-    HWND pathEdit = GetDlgItem(hwnd, kPathEditId);
     HWND statusLabel = GetDlgItem(hwnd, kStatusLabelId);
     HWND editSpeed = GetDlgItem(hwnd, kSpeedEditId);
     if (editSpeed) {
         readSpeedFromEdit(editSpeed);
     }
-    wchar_t pathBuf[MAX_PATH * 4] = {};
-    GetWindowTextW(pathEdit, pathBuf, static_cast<int>(std::size(pathBuf)));
-    std::filesystem::path exePath(pathBuf);
+    if (g_state.launchPath.empty()) {
+        setStatus(statusLabel, L"Launch path not set.");
+        return;
+    }
+    const std::filesystem::path exePath = g_state.launchPath;
     const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
     controller::SharedConfig cfg = buildSharedConfig(effectiveSpeed);
 
@@ -859,7 +874,6 @@ void layoutControls(HWND hwnd) {
     const int comboHeight = 24;
     const int editWidth = 40;
     const int buttonWidth = 120;
-    const int wideEditWidth = rc.right - labelWidth - buttonWidth - padding * 3;
     const int rowHeight = 28;
     const int checkboxHeight = 20;
     const int checkboxWidth = 20;
@@ -879,15 +893,7 @@ void layoutControls(HWND hwnd) {
         SetWindowPos(g_processLabel, nullptr, x, y + 2, labelWidth, comboHeight, SWP_NOZORDER);
     }
 
-    // TEMP: hide launch-by-path row (keep controls created for easy restore). Move offscreen.
-    if (g_pathLabel) {
-        SetWindowPos(g_pathLabel, nullptr, -5000, -5000, 120, 20, SWP_NOZORDER);
-    }
-    SetWindowPos(GetDlgItem(hwnd, kPathEditId), nullptr, -5000, -5000, wideEditWidth, comboHeight, SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(hwnd, kLaunchButtonId), nullptr, -5000, -5000, buttonWidth, comboHeight, SWP_NOZORDER);
-    // To re-enable: restore SetWindowPos to original positions and keep y += rowHeight;
-
-    y += rowHeight; // keep vertical rhythm for speed row even while launch row is hidden
+    y += rowHeight;
     if (g_speedLabel) {
         SetWindowPos(g_speedLabel, nullptr, x, y + 2, labelWidth, comboHeight, SWP_NOZORDER);
     }
@@ -1173,15 +1179,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
         g_processLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelProcess).c_str(),
                                          WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 12, 100, 20, hwnd, nullptr, nullptr, nullptr);
-        g_pathLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelGamePath).c_str(),
-                                      WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 40, 120, 20, hwnd, nullptr, nullptr, nullptr);
-        HWND pathEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                        140, 38, initialWidth, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPathEditId)), nullptr, nullptr);
-        HWND launch = CreateWindowExW(0, L"BUTTON", ui_text::UiText(UiTextId::ButtonLaunchHook).c_str(),
-                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                      0, 38, 120, 24, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kLaunchButtonId)), nullptr, nullptr);
-
         g_speedLabel = CreateWindowExW(0, L"STATIC", ui_text::UiText(UiTextId::LabelSpeed).c_str(),
                                        WS_CHILD | WS_VISIBLE | SS_NOTIFY, 12, 68, 100, 20, hwnd, nullptr, nullptr, nullptr);
         wchar_t speedText[32] = {};
@@ -1221,6 +1218,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (g_languageCombo) {
             SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
             SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"中文 Chinese"));
+            SendMessageW(g_languageCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"日本語 Japanese"));
             SendMessageW(g_languageCombo, CB_SETCURSEL, 1, 0);
         }
         if (ignoreBgm) {
@@ -1278,9 +1276,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         addTooltip(g_tooltip, combo, UiTextId::TooltipProcessCombo);
         addTooltip(g_tooltip, g_processLabel, UiTextId::TooltipProcessCombo);
         addTooltip(g_tooltip, refresh, UiTextId::TooltipHookButton);
-        addTooltip(g_tooltip, pathEdit, UiTextId::TooltipPathEdit);
-        addTooltip(g_tooltip, g_pathLabel, UiTextId::TooltipPathEdit);
-        addTooltip(g_tooltip, launch, UiTextId::TooltipLaunchButton);
         addTooltip(g_tooltip, speedEdit, UiTextId::TooltipSpeedEdit);
         addTooltip(g_tooltip, g_speedLabel, UiTextId::TooltipSpeedEdit);
         addTooltip(g_tooltip, ignoreBgm, UiTextId::TooltipProcessBgm);
@@ -1295,9 +1290,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         refreshUiText(hwnd);
 
         if (!g_initialOptions.launchPath.empty()) {
-            SetWindowTextW(pathEdit, g_initialOptions.launchPath.c_str());
-            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kLaunchButtonId, BN_CLICKED),
-                         reinterpret_cast<LPARAM>(launch));
+            handleLaunch(hwnd);
         }
 
         // Auto search & hook if requested via CLI.
@@ -1346,8 +1339,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         const WORD id = LOWORD(wParam);
         if (id == kRefreshButtonId && HIWORD(wParam) == BN_CLICKED) {
             handleApply(hwnd);
-        } else if (id == kLaunchButtonId && HIWORD(wParam) == BN_CLICKED) {
-            handleLaunch(hwnd);
         } else if (id == kProcessComboId && HIWORD(wParam) == CBN_DROPDOWN) {
             refreshProcessUi(hwnd, GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId));
         } else if (id == kProcessComboId && HIWORD(wParam) == CBN_SELCHANGE) {
@@ -1358,6 +1349,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int sel = static_cast<int>(SendMessageW(g_languageCombo, CB_GETCURSEL, 0, 0));
             if (sel == 1) {
                 ui_text::SetUiLanguage(L"zh-CN");
+            } else if (sel == 2) {
+                ui_text::SetUiLanguage(L"ja");
             } else {
                 ui_text::SetUiLanguage(L"en");
             }

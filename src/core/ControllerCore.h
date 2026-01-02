@@ -74,6 +74,7 @@ void loadAutoHookConfig();
 bool isAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName);
 bool setAutoHookEnabled(const std::wstring &exePath, const std::wstring &exeName, bool enabled, std::wstring &error);
 std::size_t autoHookEntryCount();
+std::vector<std::wstring> autoHookExeNames();
 bool tryGetAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, double &outDelaySeconds);
 bool setAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, bool enabled, double delaySeconds,
                       std::wstring &error);

@@ -388,6 +388,18 @@ std::size_t autoHookEntryCount() {
     return g_autoHookEntries.size();
 }
 
+std::vector<std::wstring> autoHookExeNames() {
+    std::lock_guard<std::mutex> lock(g_autoHookMutex);
+    std::vector<std::wstring> names;
+    names.reserve(g_autoHookEntries.size());
+    for (const auto &entry : g_autoHookEntries) {
+        if (!entry.exeName.empty()) {
+            names.push_back(entry.exeName);
+        }
+    }
+    return names;
+}
+
 bool tryGetAutoHookDelay(const std::wstring &exePath, const std::wstring &exeName, double &outDelaySeconds) {
     std::lock_guard<std::mutex> lock(g_autoHookMutex);
     for (const auto &entry : g_autoHookEntries) {
