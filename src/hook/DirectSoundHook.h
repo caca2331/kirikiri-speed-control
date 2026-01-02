@@ -6,11 +6,10 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <chrono>
-#include "../common/DspPipeline.h"
 #include "../common/AudioStreamProcessor.h"
-#include "../common/VoiceContext.h"
 
 namespace krkrspeed {
 
@@ -79,11 +78,8 @@ private:
         float approxSeconds = 0.0f;
         bool isLikelyBgm = false;
         bool loggedFormat = false;
-        std::unique_ptr<DspPipeline> dsp;
         std::uint64_t unlockCount = 0;
         std::uint64_t processedFrames = 0;
-        DWORD currentFrequency = 0;
-        bool freqDirty = false;
         std::unique_ptr<AudioStreamProcessor> stream;
     };
     std::map<std::uintptr_t, BufferInfo> m_buffers;

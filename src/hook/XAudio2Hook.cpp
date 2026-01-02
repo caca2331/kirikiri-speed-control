@@ -3,8 +3,6 @@
 #include "../common/Logging.h"
 #include <algorithm>
 #include <cstdint>
-#include <map>
-#include <deque>
 #include <vector>
 #include <cmath>
 #include <thread>
@@ -404,7 +402,6 @@ HRESULT __stdcall XAudio2Hook::SubmitSourceBufferHook(IXAudio2SourceVoice *voice
     if (!hook.m_origSubmit || !pBuffer || !pBuffer->pAudioData || pBuffer->AudioBytes == 0) {
         return XAUDIO2_E_INVALID_CALL;
     }
-    static bool disableDsp = false;
     hook.pollSharedSettings();
 
     std::vector<std::uint8_t> processed;
@@ -419,11 +416,9 @@ HRESULT __stdcall XAudio2Hook::SubmitSourceBufferHook(IXAudio2SourceVoice *voice
         }
 
         // Assume 16-bit PCM.
-        if (!disableDsp) {
-            processed = hook.onSubmitBuffer(reinterpret_cast<std::uintptr_t>(voice),
-                                            reinterpret_cast<const std::uint8_t *>(pBuffer->pAudioData),
-                                            pBuffer->AudioBytes);
-        }
+        processed = hook.onSubmitBuffer(reinterpret_cast<std::uintptr_t>(voice),
+                                        reinterpret_cast<const std::uint8_t *>(pBuffer->pAudioData),
+                                        pBuffer->AudioBytes);
         if (processed.empty()) {
             return hook.m_origSubmit(voice, pBuffer, pBufferWMA);
         }

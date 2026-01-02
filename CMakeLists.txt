@@ -44,6 +44,7 @@ add_library(krkr_common STATIC
     src/common/DspPipeline.cpp
     src/common/Logging.cpp
     src/common/AudioStreamProcessor.cpp
+    src/common/UiText.cpp
 )
 target_include_directories(krkr_common PUBLIC src)
 target_compile_definitions(krkr_common PUBLIC USE_SOUNDTOUCH)
@@ -86,6 +87,18 @@ function(copy_soundtouch_runtime target)
     endif()
 endfunction()
 
+set(UI_TEXTS_FILE "${CMAKE_SOURCE_DIR}/src/common/ui_texts.yaml")
+function(copy_ui_texts_runtime target)
+    if(EXISTS "${UI_TEXTS_FILE}")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${UI_TEXTS_FILE}"
+                $<TARGET_FILE_DIR:${target}>
+            COMMENT "Copying UI texts for ${target}"
+        )
+    endif()
+endfunction()
+
 if(WIN32)
     add_library(krkr_hook_core STATIC
         src/hook/XAudio2Hook.cpp
@@ -116,6 +129,7 @@ if(WIN32)
         )
         target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32 uuid)
         copy_soundtouch_runtime(KrkrSpeedController)
+        copy_ui_texts_runtime(KrkrSpeedController)
     endif()
 else()
     message(STATUS "Non-Windows host detected; building common library and tests only.")

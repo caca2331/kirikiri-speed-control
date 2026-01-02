@@ -1,10 +1,10 @@
 #include "ui.h"
+#include "ControllerCore.h"
 #include "../common/Logging.h"
 #include <Windows.h>
 #include <shellapi.h>
 #include <filesystem>
 #include <fstream>
-#include <vector>
 
 namespace {
 
@@ -17,6 +17,7 @@ struct CliOptions {
     bool skipWwise = false;
     bool safeMode = false;
     bool processAllAudio = false;
+    float speed = 1.5f;
     float bgmSeconds = 60.0f;
     std::filesystem::path launchPath;
     std::uint32_t stereoBgmMode = 1;
@@ -59,6 +60,13 @@ CliOptions parseArgs() {
                     opts.bgmSeconds = std::stof(v);
                 } catch (...) {}
             }
+        } else if (arg == L"--speed") {
+            std::wstring v;
+            if (next(v)) {
+                try {
+                    opts.speed = std::stof(v);
+                } catch (...) {}
+            }
         } else if (arg == L"--process-all-audio") { 
             opts.processAllAudio = true;
         } else if (arg == L"--mark-stereo-bgm") {
@@ -89,6 +97,7 @@ CliOptions parseArgs() {
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     auto opts = parseArgs();
+    krkrspeed::controller::loadAutoHookConfig();
     krkrspeed::ui::ControllerOptions controllerOpts{};
     controllerOpts.enableLog = opts.enableLog;
     controllerOpts.skipDirectSound = opts.skipDs;
@@ -97,6 +106,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     controllerOpts.skipWwise = opts.skipWwise;
     controllerOpts.safeMode = opts.safeMode;
     controllerOpts.processAllAudio = opts.processAllAudio;
+    controllerOpts.speed = opts.speed;
     controllerOpts.bgmSeconds = opts.bgmSeconds;
     controllerOpts.launchPath = opts.launchPath.wstring();
     controllerOpts.stereoBgmMode = opts.stereoBgmMode;

@@ -2,8 +2,6 @@
 
 #include <cstdint>
 #include <deque>
-#include <memory>
-#include <string>
 #include <vector>
 
 namespace krkrspeed {

@@ -16,6 +16,7 @@ struct ControllerOptions {
     bool skipWwise = false;
     bool safeMode = false;
     bool processAllAudio = false;
+    float speed = 1.5f;
     float bgmSeconds = 60.0f;
     std::wstring launchPath;
     std::uint32_t stereoBgmMode = 1;

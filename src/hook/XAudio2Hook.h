@@ -58,7 +58,7 @@ private:
     void attachSharedSettings();
     void applySharedSettingsLocked(const SharedSettings &settings);
 
-    float m_userSpeed = 2.0f;
+    float m_userSpeed = 1.5f;
     bool m_lengthGateEnabled = true;
     float m_lengthGateSeconds = 30.0f;
     bool m_skip = false;

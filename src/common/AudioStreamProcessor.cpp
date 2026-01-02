@@ -17,17 +17,20 @@ AudioStreamProcessor::AudioStreamProcessor(std::uint32_t sampleRate, std::uint32
 AudioProcessResult AudioStreamProcessor::process(const std::uint8_t *data, std::size_t bytes, float userSpeed,
                                                  bool shouldLog, std::uintptr_t key) {
     AudioProcessResult result;
-    if (!data || bytes == 0 || !m_dsp) {
-        result.output.assign(data, data + bytes);
+    auto fillPassthrough = [&](float appliedSpeed) {
+        if (data && bytes > 0) {
+            result.output.assign(data, data + bytes);
+        }
         result.cbufferSize = m_cbuffer.size();
-        result.appliedSpeed = 1.0f;
+        result.appliedSpeed = appliedSpeed;
+    };
+    if (!data || bytes == 0 || !m_dsp) {
+        fillPassthrough(1.0f);
         return result;
     }
     if (bytes < 10) {
         // Ignore tiny buffers entirely.
-        result.output.assign(data, data + bytes);
-        result.cbufferSize = m_cbuffer.size();
-        result.appliedSpeed = userSpeed;
+        fillPassthrough(userSpeed);
         return result;
     }
 

@@ -6,7 +6,7 @@
 namespace krkrspeed {
 
 struct SharedSettings {
-    float userSpeed = 2.0f;
+    float userSpeed = 1.5f;
     float lengthGateSeconds = 60.0f;
     std::uint32_t lengthGateEnabled = 1;
     std::uint32_t enableLog = 0;

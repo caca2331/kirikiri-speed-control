@@ -1,10 +1,8 @@
 #pragma once
 
-#include "VoiceContext.h"
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <vector>
 
 namespace krkrspeed {

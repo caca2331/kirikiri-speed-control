@@ -2,9 +2,6 @@
 
 #include <mutex>
 #include <unordered_map>
-#include <string>
-#include <memory>
-#include <vector>
 #include "../common/SharedSettings.h"
 #include "../common/DspPipeline.h"
 
@@ -36,7 +33,6 @@ private:
     void onPlaySound(void* channel, void* sound, void* system);
 
     // Pointers to FMOD functions
-    void* m_fnSystemPlaySound = nullptr;
     void* m_fnSystemCreateDSP = nullptr;
     void* m_fnDSPRelease = nullptr;
     void* m_fnChannelAddDSP = nullptr;

@@ -1,6 +1,5 @@
 #include "HookUtils.h"
 
-#include <Psapi.h>
 #include <cstring>
 #include <cstdint>
 
