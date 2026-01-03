@@ -22,6 +22,10 @@ public:
 
     AudioProcessResult process(const std::uint8_t *data, std::size_t bytes, float userSpeed, bool shouldLog,
                                std::uintptr_t key);
+    AudioProcessResult processTempoToSize(const std::uint8_t *data, std::size_t inputBytes, std::size_t outputBytes,
+                                          float userSpeed, bool shouldLog, std::uintptr_t key);
+    AudioProcessResult processPitchToSize(const std::uint8_t *data, std::size_t inputBytes, std::size_t outputBytes,
+                                          float userSpeed, bool shouldLog, std::uintptr_t key);
 
     void resetIfIdle(std::chrono::steady_clock::time_point now, std::chrono::milliseconds idleThreshold,
                      bool shouldLog, std::uintptr_t key);
@@ -37,6 +41,7 @@ private:
     std::uint32_t m_blockAlign = 0;
     std::unique_ptr<DspPipeline> m_dsp;
     std::vector<std::uint8_t> m_cbuffer;
+    std::vector<std::uint8_t> m_abuffer;
     std::chrono::steady_clock::time_point m_lastPlayEnd{};
     float m_lastAppliedSpeed = 1.0f;
     bool m_padNext = true;

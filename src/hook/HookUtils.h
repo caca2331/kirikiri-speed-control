@@ -8,6 +8,10 @@ namespace krkrspeed {
 // Patch the IAT entry in the main module for the given import.
 bool PatchImport(const char *importModule, const char *functionName, void *replacement, void **original);
 
+// Patch the IAT entry in a specific module for the given import.
+bool PatchImportInModule(HMODULE module, const char *importModule, const char *functionName, void *replacement,
+                         void **original);
+
 // Replace a vtable slot with a new function and return the old value.
 template <typename T>
 bool PatchVtableEntry(void **vtable, std::size_t index, T replacement, T &original) {

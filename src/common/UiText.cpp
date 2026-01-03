@@ -44,7 +44,9 @@ const KeyEntry kEntries[] = {
     {UiTextId::TooltipProcessCombo, "tooltip.process_combo", L""},
     {UiTextId::TooltipHookButton, "tooltip.hook_button", L""},
     {UiTextId::TooltipSpeedEdit, "tooltip.speed_edit", L""},
+    {UiTextId::TooltipSpeedEditWasapi, "tooltip.speed_edit_wasapi", L""},
     {UiTextId::TooltipProcessBgm, "tooltip.process_bgm", L""},
+    {UiTextId::TooltipProcessBgmWasapi, "tooltip.process_bgm_wasapi", L""},
     {UiTextId::TooltipAutoHook, "tooltip.auto_hook", L""},
     {UiTextId::TooltipAutoHookDelay, "tooltip.auto_hook_delay", L""},
     {UiTextId::TooltipHotkey, "tooltip.hotkey", L""}

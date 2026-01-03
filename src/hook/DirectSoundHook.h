@@ -18,7 +18,6 @@ public:
     static DirectSoundHook &instance();
     void initialize();
     struct Config {
-        bool skip = false;
         bool disableBgm = false;
         bool processAllAudio = false;
         float bgmGateSeconds = 60.0f;
@@ -34,6 +33,7 @@ public:
     void scanLoadedModules();
     void bootstrapVtable();
     bool hasCreateHook() const { return m_origCreate8 != nullptr; }
+    bool isActive() const { return m_active.load(); }
 
     void patchDeviceVtable(IDirectSound8 *ds8);
     void patchBufferVtable(IDirectSoundBuffer *buf);
@@ -90,6 +90,7 @@ private:
     std::unordered_map<void *, std::vector<void *>> m_bufferVtables;
     std::atomic<bool> m_loggedUnlockOnce{false};
     std::atomic<bool> m_disableAfterFault{false};
+    std::atomic<bool> m_active{false};
     bool m_disableBgm = false;
     bool m_forceApply = false;
     float m_bgmSecondsGate = 60.0f;

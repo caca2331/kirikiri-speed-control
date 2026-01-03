@@ -1,15 +1,19 @@
 #include "ControllerCore.h"
 #include "../common/SharedSettings.h"
+#include "../common/SharedStatus.h"
 #include "../common/Logging.h"
 #include <TlHelp32.h>
 #include <fstream>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <cmath>
 #include <cwchar>
+#include <cwctype>
 #include <sstream>
 #include <iomanip>
+#include <shellapi.h>
 
 namespace krkrspeed::controller {
 namespace {
@@ -119,6 +123,74 @@ bool runInjector(const std::filesystem::path &injector, DWORD pid, const std::fi
     return true;
 }
 
+bool runInjectorElevated(const std::filesystem::path &injector, DWORD pid, const std::filesystem::path &dllPath,
+                         std::wstring &error, bool &canceled) {
+    canceled = false;
+    if (injector.empty()) {
+        error = L"Injector executable not found for target architecture.";
+        return false;
+    }
+
+    std::wstring params = std::to_wstring(pid) + L" \"" + dllPath.wstring() + L"\"";
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = injector.c_str();
+    sei.lpParameters = params.c_str();
+    const auto dir = injector.parent_path();
+    if (!dir.empty()) {
+        sei.lpDirectory = dir.c_str();
+    }
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&sei)) {
+        const DWORD err = GetLastError();
+        if (err == ERROR_CANCELLED) {
+            canceled = true;
+            error = L"Elevation canceled by user.";
+        } else {
+            error = L"Failed to elevate injector: " + std::to_wstring(err);
+        }
+        return false;
+    }
+    if (!sei.hProcess) {
+        error = L"Elevated injector did not return a process handle.";
+        return false;
+    }
+    DWORD waitResult = WaitForSingleObject(sei.hProcess, 5000);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(sei.hProcess, &exitCode);
+    CloseHandle(sei.hProcess);
+    if (waitResult == WAIT_TIMEOUT) {
+        error = L"Elevated injector timed out.";
+        return false;
+    }
+    if (waitResult == WAIT_FAILED) {
+        error = L"Elevated injector wait failed: " + std::to_wstring(GetLastError());
+        return false;
+    }
+    if (exitCode != 0) {
+        error = L"Elevated injector exit code " + std::to_wstring(exitCode);
+        return false;
+    }
+    return true;
+}
+
+bool isProcessElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    bool elevated = false;
+    if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size)) {
+        elevated = (elevation.TokenIsElevated != 0);
+    }
+    CloseHandle(token);
+    return elevated;
+}
+
 std::vector<std::wstring> buildShortAndLongPaths(const std::filesystem::path &p) {
     std::vector<std::wstring> out;
     if (!p.empty()) out.push_back(p.wstring());
@@ -136,8 +208,14 @@ std::mutex g_sharedMutex;
 std::vector<AutoHookEntry> g_autoHookEntries;
 std::vector<AutoHookEntry> g_processBgmEntries;
 std::mutex g_autoHookMutex;
+std::unordered_set<std::wstring> g_processBlacklist;
+std::filesystem::file_time_type g_processBlacklistStamp{};
+std::mutex g_processBlacklistMutex;
+bool g_processBlacklistLoaded = false;
+bool g_loggedBlacklistMissing = false;
 
 constexpr wchar_t kAutoHookConfigName[] = L"krkr_speed_config.yaml";
+constexpr wchar_t kProcessBlacklistName[] = L"process_blacklist.txt";
 
 std::string toUtf8(const std::wstring &wstr) {
     if (wstr.empty()) return {};
@@ -162,6 +240,76 @@ std::string trimCopy(const std::string &s) {
     if (start == std::string::npos) return {};
     const auto end = s.find_last_not_of(" \t\r\n");
     return s.substr(start, end - start + 1);
+}
+
+std::wstring toLowerCopy(const std::wstring &input) {
+    std::wstring out;
+    out.reserve(input.size());
+    for (wchar_t c : input) {
+        out.push_back(static_cast<wchar_t>(std::towlower(c)));
+    }
+    return out;
+}
+
+std::filesystem::path processBlacklistPath() {
+    const auto dir = controllerDirectory();
+    if (dir.empty()) return {};
+    return dir / kProcessBlacklistName;
+}
+
+void loadProcessBlacklistIfNeeded() {
+    std::lock_guard<std::mutex> lock(g_processBlacklistMutex);
+    const auto path = processBlacklistPath();
+    if (path.empty()) {
+        return;
+    }
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    const auto stamp = exists ? std::filesystem::last_write_time(path, ec) : std::filesystem::file_time_type{};
+    if (g_processBlacklistLoaded && !ec && stamp == g_processBlacklistStamp) {
+        return;
+    }
+    g_processBlacklist.clear();
+    g_processBlacklistStamp = stamp;
+    g_processBlacklistLoaded = true;
+    if (!exists || ec) {
+        if (!g_loggedBlacklistMissing) {
+            g_loggedBlacklistMissing = true;
+            KRKR_LOG_INFO("Process blacklist not found; skipping filter (" + toUtf8(path.wstring()) + ")");
+        }
+        return;
+    }
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        KRKR_LOG_WARN("Failed to open process blacklist: " + toUtf8(path.wstring()));
+        return;
+    }
+
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string trimmed = trimCopy(line);
+        if (trimmed.empty()) continue;
+        if (trimmed.rfind("//", 0) == 0) continue;
+        if (!trimmed.empty() && (trimmed[0] == '#' || trimmed[0] == ';')) continue;
+        std::wstring wline = fromUtf8(trimmed);
+        if (wline.empty()) continue;
+        std::filesystem::path p(wline);
+        const auto name = p.filename().wstring();
+        const auto key = toLowerCopy(name.empty() ? wline : name);
+        if (!key.empty()) {
+            g_processBlacklist.insert(key);
+        }
+    }
+    KRKR_LOG_INFO("Process blacklist loaded (" + std::to_string(g_processBlacklist.size()) + " entries)");
+}
+
+bool isProcessBlacklisted(const std::wstring &exeName) {
+    loadProcessBlacklistIfNeeded();
+    std::lock_guard<std::mutex> lock(g_processBlacklistMutex);
+    if (g_processBlacklist.empty()) return false;
+    const auto key = toLowerCopy(exeName);
+    return g_processBlacklist.find(key) != g_processBlacklist.end();
 }
 
 std::string unescapeYamlString(const std::string &s) {
@@ -629,6 +777,9 @@ std::vector<ProcessInfo> enumerateVisibleProcesses() {
             if (session == 0 || session != currentSession) {
                 continue; // skip services and other sessions
             }
+            if (isProcessBlacklisted(entry.szExeFile)) {
+                continue;
+            }
             std::wstring title;
             if (!getVisibleWindowTitle(entry.th32ProcessID, title)) {
                 continue; // skip helpers/subprocesses without a top-level window
@@ -674,6 +825,9 @@ std::vector<ProcessInfo> enumerateSessionProcesses() {
             }
             if (session == 0 || session != currentSession) {
                 continue; // skip services and other sessions
+            }
+            if (isProcessBlacklisted(entry.szExeFile)) {
+                continue;
             }
 
             ProcessInfo info;
@@ -868,11 +1022,6 @@ bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstri
     settings.lengthGateSeconds = std::clamp(config.bgmSeconds, 0.1f, 600.0f);
     settings.lengthGateEnabled = config.lengthGateEnabled ? 1u : 0u;
     settings.enableLog = config.enableLog ? 1u : 0u;
-    settings.skipDirectSound = config.skipDirectSound ? 1u : 0u;
-    settings.skipXAudio2 = config.skipXAudio2 ? 1u : 0u;
-    settings.skipFmod = config.skipFmod ? 1u : 0u;
-    settings.skipWwise = config.skipWwise ? 1u : 0u;
-    settings.safeMode = config.safeMode ? 1u : 0u;
     settings.disableBgm = 0;
     settings.processAllAudio = config.processAllAudio ? 1u : 0u;
     settings.bgmSecondsGate = std::clamp(config.bgmSeconds, 0.1f, 600.0f);
@@ -921,27 +1070,29 @@ bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::filesyst
     }
 
     std::vector<std::wstring> attemptNotes;
+    std::vector<std::wstring> candidatePaths;
     std::wstring lastError;
     size_t attemptIdx = 0;
     const auto controllerDir = controllerDirectory();
     const auto injector = findInjectorForArch(controllerDir, targetArch);
-
-    for (const auto &p : buildShortAndLongPaths(dllPath)) {
-        if (p.empty()) continue;
-        if (runInjector(injector, pid, p, lastError)) {
-            return true;
+    auto addCandidate = [&](const std::wstring &p) {
+        if (p.empty()) return;
+        if (std::find(candidatePaths.begin(), candidatePaths.end(), p) == candidatePaths.end()) {
+            candidatePaths.push_back(p);
         }
-        attemptNotes.push_back(L"#" + std::to_wstring(attemptIdx) + L" " + p + L": " + lastError);
-        ++attemptIdx;
+    };
+    for (const auto &p : buildShortAndLongPaths(dllPath)) {
+        addCandidate(p);
     }
 
     const auto targetDir = getProcessDirectory(pid);
+    std::filesystem::path targetDll;
+    bool copied = false;
     if (!targetDir.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(targetDir, ec);
-        const auto targetDll = targetDir / dllPath.filename();
+        targetDll = targetDir / dllPath.filename();
         const auto dep = dllPath.parent_path() / L"SoundTouch.dll";
-        bool copied = false;
         if (std::filesystem::exists(dllPath)) {
             std::filesystem::copy_file(dllPath, targetDll, std::filesystem::copy_options::overwrite_existing, ec);
             copied = !ec;
@@ -960,14 +1111,33 @@ bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::filesyst
         }
         if (copied) {
             for (const auto &p : buildShortAndLongPaths(targetDll)) {
-                if (p.empty()) continue;
-                if (runInjector(injector, pid, p, lastError)) {
-                    return true;
-                }
-                attemptNotes.push_back(L"#" + std::to_wstring(attemptIdx) + L" " + p + L": " + lastError);
-                ++attemptIdx;
+                addCandidate(p);
             }
         }
+    }
+
+    for (const auto &p : candidatePaths) {
+        if (runInjector(injector, pid, p, lastError)) {
+            return true;
+        }
+        attemptNotes.push_back(L"#" + std::to_wstring(attemptIdx) + L" " + p + L": " + lastError);
+        ++attemptIdx;
+    }
+
+    if (!isProcessElevated()) {
+        KRKR_LOG_INFO("Injector failed; retrying with elevated injector");
+        bool canceled = false;
+        for (const auto &p : candidatePaths) {
+            if (runInjectorElevated(injector, pid, p, lastError, canceled)) {
+                return true;
+            }
+            if (canceled) {
+                error = lastError;
+                return false;
+            }
+        }
+        error = L"Elevated injector failed: " + lastError;
+        return false;
     }
 
     error = L"DLL injection returned 0 (remote LoadLibraryW failed). ";
@@ -987,6 +1157,26 @@ bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::filesyst
         error += L" Last attempt: " + lastError;
     }
     return false;
+}
+
+bool isWasapiActiveForPid(DWORD pid) {
+    if (pid == 0) {
+        return false;
+    }
+    const auto name = BuildSharedStatusName(static_cast<std::uint32_t>(pid));
+    HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+    if (!mapping) {
+        return false;
+    }
+    auto *view = static_cast<SharedStatus *>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedStatus)));
+    if (!view) {
+        CloseHandle(mapping);
+        return false;
+    }
+    const auto backend = static_cast<AudioBackend>(view->activeBackend);
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
+    return backend == AudioBackend::Wasapi;
 }
 
 bool launchAndInject(const std::filesystem::path &exePath, const SharedConfig &config, DWORD &outPid, std::wstring &error) {

@@ -1,3 +1,19 @@
+## [1.2.0] - 2026-01-03
+### Added
+- WASAPI hook with tempo-based speedup path (Unity titles supported)
+- Process blacklist file (`process_blacklist.txt`) to hide common/system processes
+- Injected process tagging in dropdown (`[Injected][pid] ...`)
+- Single-instance controller protection
+- Rolling status bar with auto-scroll and hooked-process exit notifications
+- Elevated injector fallback when non-elevated injection fails
+- Japanese README
+### Changed
+- WASAPI hooking/processing refinements and cleanup
+- UI tweaks: status area height increased, tooltip updates for WASAPI mode
+### Removed
+- Removed unused hooks, including Fmod, XAudio2, Wwise.
+- Removed several unused arg flags
+
 ## [1.1.0] - 2026-01-02
 ### Added
 - Auto-hook feature with per-game config (auto_hook + process_bgm)
@@ -8,7 +24,7 @@
 - Tooltips for labels and controls (including hotkey help)
 ### Changed
 - UI layout updates and dropdown selection behavior refinements
-- Dist staging structure reorganized for clarity
+- Dist staging structure changed for clarity
 
 ## [1.0.1] - 2025-12-29
 ### Fixed

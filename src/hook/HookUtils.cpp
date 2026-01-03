@@ -5,13 +5,30 @@
 
 namespace krkrspeed {
 
-bool PatchImport(const char *importModule, const char *functionName, void *replacement, void **original) {
-    HMODULE module = GetModuleHandleW(nullptr);
-    if (!module) return false;
+namespace {
+bool patchThunk(void *address, void *replacement, void **original) {
+    if (!address || !replacement) return false;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(address, sizeof(void *), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return false;
+    }
+    if (original && !*original) {
+        *original = reinterpret_cast<void *>(*reinterpret_cast<ULONG_PTR *>(address));
+    }
+    *reinterpret_cast<ULONG_PTR *>(address) = reinterpret_cast<ULONG_PTR>(replacement);
+    VirtualProtect(address, sizeof(void *), oldProtect, &oldProtect);
+    return true;
+}
+} // namespace
 
-    ULONG size = 0;
+bool PatchImportInModule(HMODULE module, const char *importModule, const char *functionName, void *replacement,
+                         void **original) {
+    if (!module || !importModule || !functionName || !replacement) {
+        return false;
+    }
     auto *dos = reinterpret_cast<PIMAGE_DOS_HEADER>(module);
-    auto *nt = reinterpret_cast<PIMAGE_NT_HEADERS>((reinterpret_cast<std::uint8_t *>(module)) + dos->e_lfanew);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto *nt = reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<std::uint8_t *>(module) + dos->e_lfanew);
     const auto &dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (dir.VirtualAddress == 0) return false;
 
@@ -19,7 +36,8 @@ bool PatchImport(const char *importModule, const char *functionName, void *repla
         reinterpret_cast<std::uint8_t *>(module) + dir.VirtualAddress);
 
     for (; imports && imports->Name; ++imports) {
-        const char *dllName = reinterpret_cast<const char *>(reinterpret_cast<std::uint8_t *>(module) + imports->Name);
+        const char *dllName =
+            reinterpret_cast<const char *>(reinterpret_cast<std::uint8_t *>(module) + imports->Name);
         if (_stricmp(dllName, importModule) != 0) {
             continue;
         }
@@ -39,17 +57,16 @@ bool PatchImport(const char *importModule, const char *functionName, void *repla
                 continue;
             }
 
-            DWORD oldProtect = 0;
-            if (!VirtualProtect(&thunk->u1.Function, sizeof(void *), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                return false;
-            }
-            *original = reinterpret_cast<void *>(thunk->u1.Function);
-            thunk->u1.Function = reinterpret_cast<ULONG_PTR>(replacement);
-            VirtualProtect(&thunk->u1.Function, sizeof(void *), oldProtect, &oldProtect);
-            return true;
+            return patchThunk(&thunk->u1.Function, replacement, original);
         }
     }
     return false;
+}
+
+bool PatchImport(const char *importModule, const char *functionName, void *replacement, void **original) {
+    HMODULE module = GetModuleHandleW(nullptr);
+    if (!module) return false;
+    return PatchImportInModule(module, importModule, functionName, replacement, original);
 }
 
 } // namespace krkrspeed

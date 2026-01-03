@@ -88,6 +88,7 @@ function(copy_soundtouch_runtime target)
 endfunction()
 
 set(UI_TEXTS_FILE "${CMAKE_SOURCE_DIR}/src/common/ui_texts.yaml")
+set(PROCESS_BLACKLIST_FILE "${CMAKE_SOURCE_DIR}/src/common/process_blacklist.txt")
 function(copy_ui_texts_runtime target)
     if(EXISTS "${UI_TEXTS_FILE}")
         add_custom_command(TARGET ${target} POST_BUILD
@@ -99,15 +100,26 @@ function(copy_ui_texts_runtime target)
     endif()
 endfunction()
 
+function(copy_process_blacklist_runtime target)
+    if(EXISTS "${PROCESS_BLACKLIST_FILE}")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${PROCESS_BLACKLIST_FILE}"
+                $<TARGET_FILE_DIR:${target}>
+            COMMENT "Copying process blacklist for ${target}"
+        )
+    endif()
+endfunction()
+
 if(WIN32)
     add_library(krkr_hook_core STATIC
-        src/hook/XAudio2Hook.cpp
         src/hook/DirectSoundHook.cpp
-        src/hook/FMODHook.cpp
-        src/hook/WwiseHook.cpp
+        src/hook/WasapiHook.cpp
         src/hook/HookUtils.cpp
+        src/hook/SharedSettingsManager.cpp
+        src/hook/SharedStatusManager.cpp
     )
-    target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound xaudio2 dxguid winmm)
+    target_link_libraries(krkr_hook_core PUBLIC krkr_common dsound dxguid winmm)
     target_include_directories(krkr_hook_core PUBLIC src)
 
     add_executable(krkr_injector
@@ -130,6 +142,7 @@ if(WIN32)
         target_link_libraries(KrkrSpeedController PRIVATE krkr_hook_core comctl32 uuid)
         copy_soundtouch_runtime(KrkrSpeedController)
         copy_ui_texts_runtime(KrkrSpeedController)
+        copy_process_blacklist_runtime(KrkrSpeedController)
     endif()
 else()
     message(STATUS "Non-Windows host detected; building common library and tests only.")

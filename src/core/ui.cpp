@@ -37,9 +37,11 @@ constexpr int kLanguageComboId = 1013;
 constexpr int kAutoHookDelayCheckId = 1014;
 constexpr int kAutoHookDelayLabelId = 1015;
 constexpr UINT kAutoHookTimerId = 3001;
-constexpr UINT kAutoHookIntervalMs = 2000;
+constexpr UINT kAutoHookIntervalMs = 3000;
 constexpr UINT kMsgAutoSelectPid = WM_APP + 2;
 constexpr UINT kMsgRefreshQuiet = WM_APP + 1;
+constexpr UINT kMsgStatusUpdate = WM_APP + 3;
+constexpr std::size_t kStatusMaxChars = 128 * 1024 / sizeof(wchar_t);
 constexpr int kHotkeyToggleSpeedId = 2001;
 constexpr int kHotkeySpeedUpId = 2002;
 constexpr int kHotkeySpeedDownId = 2003;
@@ -51,6 +53,8 @@ using controller::SpeedControlState;
 using controller::SpeedHotkeyAction;
 using ui_text::UiTextId;
 
+struct RemovedHookInfo;
+
 bool getSelectedProcess(HWND hwnd, ProcessInfo &proc, std::wstring &error);
 void refreshProcessList(HWND combo, HWND statusLabel, bool quiet);
 controller::SharedConfig buildSharedConfig(float speed);
@@ -58,12 +62,14 @@ void updateAutoHookCheckbox(HWND hwnd);
 void updateProcessBgmCheckbox(HWND hwnd);
 void updateAutoHookDelayControls(HWND hwnd);
 void updateHookButtonState(HWND hwnd);
-bool pruneHookedPids(const std::unordered_set<DWORD> &current);
+bool pruneHookedPids(const std::unordered_set<DWORD> &current, std::vector<RemovedHookInfo> *removed = nullptr);
 void ensureUiTextLoaded();
 void refreshUiText(HWND hwnd);
 void updateTooltips();
 void updateTrackedTooltip(const MSG &msg);
 TOOLINFOW makeToolInfo(HWND control, UiTextId textId);
+bool setTooltipId(HWND control, UiTextId textId);
+void scrollStatusToBottom(HWND statusLabel);
 int getTextHeight(HWND hwnd, int fallback);
 HFONT createHotkeyFont(HWND reference);
 void handleAutoHookDelayToggle(HWND hwnd);
@@ -75,6 +81,33 @@ std::wstring toLowerCopy(const std::wstring &input) {
         out.push_back(static_cast<wchar_t>(std::towlower(c)));
     }
     return out;
+}
+
+bool tryParsePidFromLabel(const wchar_t *item, DWORD &pid) {
+    if (!item) return false;
+    const wchar_t *open = std::wcschr(item, L'[');
+    if (!open) return false;
+    const wchar_t *close = std::wcschr(open + 1, L']');
+    if (!close) return false;
+    bool injectedPrefix = false;
+    if ((close - open) == 9 && _wcsnicmp(open + 1, L"Injected", 8) == 0) {
+        injectedPrefix = true;
+    }
+    const wchar_t *pidOpen = open;
+    const wchar_t *pidClose = close;
+    if (injectedPrefix) {
+        pidOpen = std::wcschr(close + 1, L'[');
+        if (!pidOpen) return false;
+        pidClose = std::wcschr(pidOpen + 1, L']');
+        if (!pidClose) return false;
+    }
+    wchar_t *end = nullptr;
+    const wchar_t *digits = pidOpen + 1;
+    if (digits >= pidClose) return false;
+    DWORD parsed = std::wcstoul(digits, &end, 10);
+    if (end != pidClose || parsed == 0) return false;
+    pid = parsed;
+    return true;
 }
 
 void refreshProcessUi(HWND hwnd, HWND combo, HWND statusLabel) {
@@ -97,15 +130,15 @@ struct AppState {
     SpeedControlState speed;
     std::filesystem::path launchPath;
     bool enableLog = false;
-    bool skipDirectSound = false;
-    bool skipXAudio2 = false;
-    bool skipFmod = false;
-    bool skipWwise = false;
-    bool safeMode = false;
     bool processAllAudio = false;
     float bgmSeconds = 60.0f; // also used as length gate seconds
     std::uint32_t stereoBgmMode = 1;
     std::wstring searchTerm;
+};
+
+struct RemovedHookInfo {
+    DWORD pid = 0;
+    std::wstring name;
 };
 
 AppState g_state;
@@ -129,13 +162,38 @@ static HFONT g_hotkeyFont = nullptr;
 static std::unordered_set<DWORD> g_knownPids;
 static std::unordered_set<DWORD> g_autoHookAttempted;
 static std::unordered_set<DWORD> g_hookedPids;
+static std::unordered_map<DWORD, std::wstring> g_hookedPidNames;
 static DWORD g_pendingAutoSelectPid = 0;
 static bool g_pendingAutoHookRefresh = false;
 static WNDPROC g_speedEditProc = nullptr;
+static std::wstring g_statusBuffer;
 
 void setStatus(HWND statusLabel, const std::wstring &text) {
-    SetWindowTextW(statusLabel, text.c_str());
+    if (!statusLabel) return;
+    if (!g_statusBuffer.empty()) {
+        g_statusBuffer += L"\r\n";
+    }
+    g_statusBuffer += text;
+    if (g_statusBuffer.size() > kStatusMaxChars) {
+        const std::size_t excess = g_statusBuffer.size() - kStatusMaxChars;
+        std::size_t trimPos = g_statusBuffer.find(L'\n', excess);
+        if (trimPos != std::wstring::npos && trimPos + 1 < g_statusBuffer.size()) {
+            g_statusBuffer.erase(0, trimPos + 1);
+        } else {
+            g_statusBuffer.erase(0, excess);
+        }
+    }
+    SetWindowTextW(statusLabel, g_statusBuffer.c_str());
+    scrollStatusToBottom(statusLabel);
     KRKR_LOG_INFO(text);
+}
+
+void scrollStatusToBottom(HWND statusLabel) {
+    if (!statusLabel) return;
+    const int length = GetWindowTextLengthW(statusLabel);
+    SendMessageW(statusLabel, EM_SETSEL, length, length);
+    SendMessageW(statusLabel, EM_SCROLLCARET, 0, 0);
+    SendMessageW(statusLabel, WM_VSCROLL, SB_BOTTOM, 0);
 }
 
 void ensureUiTextLoaded() {
@@ -247,22 +305,58 @@ void updateAutoHookCheckbox(HWND hwnd) {
 void updateProcessBgmCheckbox(HWND hwnd) {
     HWND ignoreBgm = GetDlgItem(hwnd, kIgnoreBgmCheckId);
     if (!ignoreBgm) return;
+    HWND speedEdit = GetDlgItem(hwnd, kSpeedEditId);
+    bool tooltipChanged = false;
+    auto applyTooltipMode = [&](bool wasapi) {
+        const UiTextId bgmTip = wasapi ? UiTextId::TooltipProcessBgmWasapi : UiTextId::TooltipProcessBgm;
+        const UiTextId speedTip = wasapi ? UiTextId::TooltipSpeedEditWasapi : UiTextId::TooltipSpeedEdit;
+        tooltipChanged |= setTooltipId(ignoreBgm, bgmTip);
+        tooltipChanged |= setTooltipId(g_ignoreBgmLabel, bgmTip);
+        tooltipChanged |= setTooltipId(speedEdit, speedTip);
+        tooltipChanged |= setTooltipId(g_speedLabel, speedTip);
+    };
     ProcessInfo proc;
     std::wstring error;
     if (!getSelectedProcess(hwnd, proc, error)) {
         SendMessageW(ignoreBgm, BM_SETCHECK, BST_UNCHECKED, 0);
+        EnableWindow(ignoreBgm, TRUE);
         g_state.processAllAudio = false;
+        applyTooltipMode(false);
+        if (tooltipChanged) {
+            updateTooltips();
+        }
         return;
     }
     std::wstring exePath;
     if (!controller::getProcessExePath(proc.pid, exePath, error)) {
         SendMessageW(ignoreBgm, BM_SETCHECK, BST_UNCHECKED, 0);
+        EnableWindow(ignoreBgm, TRUE);
         g_state.processAllAudio = false;
+        applyTooltipMode(false);
+        if (tooltipChanged) {
+            updateTooltips();
+        }
+        return;
+    }
+    const bool wasapiActive = controller::isWasapiActiveForPid(proc.pid);
+    if (wasapiActive) {
+        SendMessageW(ignoreBgm, BM_SETCHECK, BST_CHECKED, 0);
+        EnableWindow(ignoreBgm, FALSE);
+        g_state.processAllAudio = true;
+        applyTooltipMode(true);
+        if (tooltipChanged) {
+            updateTooltips();
+        }
         return;
     }
     const bool enabled = controller::isProcessBgmEnabled(exePath, proc.name);
     SendMessageW(ignoreBgm, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    EnableWindow(ignoreBgm, TRUE);
     g_state.processAllAudio = enabled;
+    applyTooltipMode(false);
+    if (tooltipChanged) {
+        updateTooltips();
+    }
 }
 
 void updateAutoHookDelayControls(HWND hwnd) {
@@ -335,16 +429,13 @@ bool selectProcessByPid(HWND hwnd, DWORD pid) {
     wchar_t item[256] = {};
     for (int i = 0; i < count; ++i) {
         if (SendMessageW(combo, CB_GETLBTEXT, i, reinterpret_cast<LPARAM>(item)) > 0) {
-            if (wcsncmp(item, L"[", 1) == 0) {
-                wchar_t *end = nullptr;
-                DWORD listedPid = std::wcstoul(item + 1, &end, 10);
-                if (listedPid == pid) {
-                    SendMessageW(combo, CB_SETCURSEL, i, 0);
-                    updateAutoHookCheckbox(hwnd);
-                    updateProcessBgmCheckbox(hwnd);
-                    updateHookButtonState(hwnd);
-                    return true;
-                }
+            DWORD listedPid = 0;
+            if (tryParsePidFromLabel(item, listedPid) && listedPid == pid) {
+                SendMessageW(combo, CB_SETCURSEL, i, 0);
+                updateAutoHookCheckbox(hwnd);
+                updateProcessBgmCheckbox(hwnd);
+                updateHookButtonState(hwnd);
+                return true;
             }
         }
     }
@@ -381,17 +472,27 @@ void initKnownPids() {
     }
 }
 
-bool pruneHookedPids(const std::unordered_set<DWORD> &current) {
-    bool removed = false;
+bool pruneHookedPids(const std::unordered_set<DWORD> &current, std::vector<RemovedHookInfo> *removed) {
+    bool removedAny = false;
     for (auto it = g_hookedPids.begin(); it != g_hookedPids.end();) {
         if (current.find(*it) == current.end()) {
+            if (removed) {
+                RemovedHookInfo info{};
+                info.pid = *it;
+                auto itName = g_hookedPidNames.find(*it);
+                if (itName != g_hookedPidNames.end()) {
+                    info.name = itName->second;
+                }
+                removed->push_back(std::move(info));
+            }
+            g_hookedPidNames.erase(*it);
             it = g_hookedPids.erase(it);
-            removed = true;
+            removedAny = true;
         } else {
             ++it;
         }
     }
-    return removed;
+    return removedAny;
 }
 
 void scheduleAutoHook(HWND hwnd, const ProcessInfo &proc, controller::SharedConfig cfg, double delaySeconds) {
@@ -434,9 +535,19 @@ void scheduleAutoHook(HWND hwnd, const ProcessInfo &proc, controller::SharedConf
 
         if (!controller::injectDllIntoProcess(targetArch, proc.pid, dllPath, err)) {
             KRKR_LOG_WARN(std::string("Auto-hook inject failed for pid=") + std::to_string(proc.pid));
+            if (hwnd) {
+                auto msg = std::make_unique<std::wstring>(
+                    L"Auto-hook failed for " + proc.name + L" (PID " + std::to_wstring(proc.pid) + L"): " + err);
+                PostMessageW(hwnd, kMsgStatusUpdate, 0, reinterpret_cast<LPARAM>(msg.release()));
+            }
             return;
         }
         KRKR_LOG_INFO(std::string("Auto-hook injected pid=") + std::to_string(proc.pid));
+        if (hwnd) {
+            auto msg = std::make_unique<std::wstring>(
+                L"Auto-hook injected: " + proc.name + L" (PID " + std::to_wstring(proc.pid) + L")");
+            PostMessageW(hwnd, kMsgStatusUpdate, 0, reinterpret_cast<LPARAM>(msg.release()));
+        }
         if (hwnd) {
             PostMessageW(hwnd, kMsgAutoSelectPid, static_cast<WPARAM>(proc.pid), 0);
         }
@@ -533,7 +644,7 @@ void pollAutoHook(HWND hwnd) {
         }
     }
 
-    if (controller::autoHookEntryCount() == 0) {
+    if (controller::autoHookEntryCount() == 0 && g_hookedPids.empty()) {
         return;
     }
 
@@ -558,11 +669,18 @@ void pollAutoHook(HWND hwnd) {
         }
     }
 
-    const bool removedHooked = pruneHookedPids(current);
+    std::vector<RemovedHookInfo> removedHooks;
+    const bool removedHooked = pruneHookedPids(current, &removedHooks);
     bool refreshed = false;
     if (removedHooked) {
         refreshProcessUi(hwnd, combo, statusLabel);
         refreshed = true;
+        for (const auto &info : removedHooks) {
+            std::wstring label = info.name.empty()
+                ? (L"PID " + std::to_wstring(info.pid))
+                : (info.name + L" (PID " + std::to_wstring(info.pid) + L")");
+            setStatus(statusLabel, L"Hooked process exited: " + label);
+        }
     }
     if (removedInjected && !refreshed) {
         refreshProcessUi(hwnd, combo, statusLabel);
@@ -662,11 +780,6 @@ controller::SharedConfig buildSharedConfig(float speed) {
     cfg.speed = speed;
     cfg.lengthGateEnabled = true;
     cfg.enableLog = g_state.enableLog;
-    cfg.skipDirectSound = g_state.skipDirectSound;
-    cfg.skipXAudio2 = g_state.skipXAudio2;
-    cfg.skipFmod = g_state.skipFmod;
-    cfg.skipWwise = g_state.skipWwise;
-    cfg.safeMode = g_state.safeMode;
     cfg.processAllAudio = g_state.processAllAudio;
     cfg.stereoBgmMode = g_state.stereoBgmMode;
     cfg.bgmSeconds = g_state.bgmSeconds;
@@ -690,10 +803,7 @@ void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes)
     if (prevSel >= 0) {
         wchar_t item[256] = {};
         if (SendMessageW(combo, CB_GETLBTEXT, prevSel, reinterpret_cast<LPARAM>(item)) > 0) {
-            if (wcsncmp(item, L"[", 1) == 0) {
-                wchar_t *end = nullptr;
-                prevPid = std::wcstoul(item + 1, &end, 10);
-            }
+            tryParsePidFromLabel(item, prevPid);
         }
     }
 
@@ -701,7 +811,12 @@ void populateProcessCombo(HWND combo, const std::vector<ProcessInfo> &processes)
     int restoredIndex = -1;
     for (size_t i = 0; i < processes.size(); ++i) {
         const auto &proc = processes[i];
-        std::wstring label = L"[" + std::to_wstring(proc.pid) + L"] " + proc.name;
+        std::wstring label;
+        if (g_hookedPids.find(proc.pid) != g_hookedPids.end()) {
+            label = L"[Injected] [" + std::to_wstring(proc.pid) + L"] " + proc.name;
+        } else {
+            label = L"[" + std::to_wstring(proc.pid) + L"] " + proc.name;
+        }
         if (!proc.windowTitle.empty()) {
             label += L" | " + proc.windowTitle;
         }
@@ -775,7 +890,13 @@ void handleApply(HWND hwnd) {
 
     if (controller::injectDllIntoProcess(targetArch, proc.pid, dllPath, error)) {
         g_hookedPids.insert(proc.pid);
+        g_hookedPidNames[proc.pid] = proc.name;
         updateHookButtonState(hwnd);
+        updateProcessBgmCheckbox(hwnd);
+        HWND combo = GetDlgItem(hwnd, kProcessComboId);
+        if (combo) {
+            refreshProcessUi(hwnd, combo, statusLabel);
+        }
         wchar_t message[160] = {};
         const float effectiveSpeed = controller::effectiveSpeed(g_state.speed);
         if (g_state.speed.enabled) {
@@ -812,6 +933,9 @@ void handleLaunch(HWND hwnd) {
     std::wstring err;
     if (controller::launchAndInject(exePath, cfg, launchedPid, err)) {
         g_hookedPids.insert(launchedPid);
+        if (!exePath.empty()) {
+            g_hookedPidNames[launchedPid] = exePath.filename().wstring();
+        }
         setStatus(statusLabel, L"Launched and injected: " + exePath.filename().wstring() +
                    L" (PID " + std::to_wstring(launchedPid) + L")");
     } else {
@@ -833,16 +957,12 @@ void handleLaunch(HWND hwnd) {
             wchar_t item[256] = {};
             for (int i = 0; i < count; ++i) {
                 if (SendMessageW(combo, CB_GETLBTEXT, i, reinterpret_cast<LPARAM>(item)) > 0) {
-                    // Expect format "[PID] name"
-                    if (wcsncmp(item, L"[", 1) == 0) {
-                        wchar_t *end = nullptr;
-                        DWORD listedPid = std::wcstoul(item + 1, &end, 10);
-                        if (listedPid == pid) {
-                            PostMessageW(combo, CB_SETCURSEL, i, 0);
-                            PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kProcessComboId, CBN_SELCHANGE),
-                                         reinterpret_cast<LPARAM>(combo));
-                            return;
-                        }
+                    DWORD listedPid = 0;
+                    if (tryParsePidFromLabel(item, listedPid) && listedPid == pid) {
+                        PostMessageW(combo, CB_SETCURSEL, i, 0);
+                        PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(kProcessComboId, CBN_SELCHANGE),
+                                     reinterpret_cast<LPARAM>(combo));
+                        return;
                     }
                 }
             }
@@ -861,7 +981,7 @@ void layoutControls(HWND hwnd) {
     const int rowHeight = 28;
     const int checkboxHeight = 20;
     const int checkboxWidth = 20;
-    const int statusHeight = comboHeight * 2;
+    const int statusHeight = comboHeight * 3;
 
     int x = padding;
     int y = padding;
@@ -916,7 +1036,7 @@ void layoutControls(HWND hwnd) {
     const int linkPadding = 8;
     const int comboX = rc.right - buttonWidth - padding;
     const int comboY = rc.bottom - padding - comboHeight;
-    const int hotkeyWidth = buttonWidth / 2;
+    const int hotkeyWidth = static_cast<int>(buttonWidth * 0.8f);
     const int hotkeyX = comboX - linkPadding - hotkeyWidth;
     int linkWidth = hotkeyX - x - linkPadding;
     if (linkWidth < 0) linkWidth = 0;
@@ -940,7 +1060,7 @@ void layoutControls(HWND hwnd) {
         SetWindowPos(g_hotkeyLabel, nullptr, hotkeyX, textBottomY, hotkeyWidth, textHeight, SWP_NOZORDER);
     }
     if (g_languageCombo) {
-        const int dropHeight = comboHeight * 3; // selection + 2 items
+        const int dropHeight = comboHeight * 4; // selection + 3 items
         SetWindowPos(g_languageCombo, nullptr, comboX, comboY, buttonWidth, dropHeight, SWP_NOZORDER);
     }
 }
@@ -1036,6 +1156,17 @@ void addTooltip(HWND tooltip, HWND control, UiTextId textId) {
     }
 }
 
+bool setTooltipId(HWND control, UiTextId textId) {
+    if (!control) return false;
+    const auto key = reinterpret_cast<std::uintptr_t>(control);
+    auto it = g_tooltipById.find(key);
+    if (it != g_tooltipById.end() && it->second == textId) {
+        return false;
+    }
+    g_tooltipById[key] = textId;
+    return true;
+}
+
 void updateTooltips() {
     if (!g_tooltip) return;
     for (const auto &kv : g_tooltipById) {
@@ -1074,7 +1205,7 @@ void updateTrackedTooltip(const MSG &msg) {
         if (!hit || hit == g_mainWindow) {
             POINT clientPt = msg.pt;
             ScreenToClient(g_mainWindow, &clientPt);
-            hit = ChildWindowFromPointEx(g_mainWindow, clientPt, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED);
+            hit = ChildWindowFromPointEx(g_mainWindow, clientPt, CWP_SKIPINVISIBLE);
             if (hit == g_mainWindow) {
                 hit = nullptr;
             }
@@ -1210,8 +1341,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         // Hook + Apply button removed; "Hook" button handles injection.
 
-        CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE,
-                        12, 96, 400, 20, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
+        HWND statusEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                          WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
+                                              ES_READONLY | WS_VSCROLL,
+                                          12, 96, 400, 20, hwnd,
+                                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusLabelId)), nullptr, nullptr);
+        if (statusEdit) {
+            SendMessageW(statusEdit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+            setStatus(statusEdit, L"Ready");
+        }
 
         g_linkIsSysLink = true;
         const wchar_t *linkText = ui_text::UiText(UiTextId::LinkMarkup).c_str();
@@ -1371,6 +1509,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     case WM_TIMER:
         if (wParam == kAutoHookTimerId) {
             pollAutoHook(hwnd);
+            updateProcessBgmCheckbox(hwnd);
             return 0;
         }
         break;
@@ -1415,11 +1554,28 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         refreshProcessList(GetDlgItem(hwnd, kProcessComboId), GetDlgItem(hwnd, kStatusLabelId), true);
         return 0;
     }
+    case kMsgStatusUpdate: {
+        auto *msg = reinterpret_cast<std::wstring *>(lParam);
+        if (msg) {
+            setStatus(GetDlgItem(hwnd, kStatusLabelId), *msg);
+            delete msg;
+        }
+        return 0;
+    }
     case kMsgAutoSelectPid: {
         DWORD pid = static_cast<DWORD>(wParam);
         g_pendingAutoSelectPid = pid;
         g_pendingAutoHookRefresh = true;
         g_hookedPids.insert(pid);
+        if (g_hookedPidNames.find(pid) == g_hookedPidNames.end()) {
+            const auto session = controller::enumerateSessionProcesses();
+            for (const auto &proc : session) {
+                if (proc.pid == pid) {
+                    g_hookedPidNames[pid] = proc.name;
+                    break;
+                }
+            }
+        }
         HWND combo = GetDlgItem(hwnd, kProcessComboId);
         if (combo) {
             refreshProcessUi(hwnd, combo, GetDlgItem(hwnd, kStatusLabelId));
@@ -1461,11 +1617,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 void setInitialOptions(const ControllerOptions &opts) {
     g_initialOptions = opts;
     g_state.enableLog = opts.enableLog;
-    g_state.skipDirectSound = opts.skipDirectSound;
-    g_state.skipXAudio2 = opts.skipXAudio2;
-    g_state.skipFmod = opts.skipFmod;
-    g_state.skipWwise = opts.skipWwise;
-    g_state.safeMode = opts.safeMode;
     g_state.processAllAudio = opts.processAllAudio;
     controller::initSpeedState(g_state.speed, opts.speed, true);
     g_state.bgmSeconds = opts.bgmSeconds;

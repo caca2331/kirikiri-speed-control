@@ -27,11 +27,6 @@ struct SharedConfig {
     bool lengthGateEnabled = true;
     float bgmSeconds = 60.0f;
     bool enableLog = false;
-    bool skipDirectSound = false;
-    bool skipXAudio2 = false;
-    bool skipFmod = false;
-    bool skipWwise = false;
-    bool safeMode = false;
     bool processAllAudio = false;
     std::uint32_t stereoBgmMode = 1;
 };
@@ -66,6 +61,7 @@ bool getDllArch(const std::filesystem::path &path, ProcessArch &archOut, std::ws
 bool selectHookForArch(const std::filesystem::path &controllerDir, ProcessArch targetArch, std::filesystem::path &outPath,
                        std::wstring &error);
 bool writeSharedSettingsForPid(DWORD pid, const SharedConfig &config, std::wstring &error);
+bool isWasapiActiveForPid(DWORD pid);
 bool injectDllIntoProcess(ProcessArch targetArch, DWORD pid, const std::filesystem::path &dllPath, std::wstring &error);
 bool launchAndInject(const std::filesystem::path &exePath, const SharedConfig &config, DWORD &outPid, std::wstring &error);
 std::wstring describeArch(ProcessArch arch);

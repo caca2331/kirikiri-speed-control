@@ -20,7 +20,9 @@ enum class UiTextId {
     TooltipProcessCombo,
     TooltipHookButton,
     TooltipSpeedEdit,
+    TooltipSpeedEditWasapi,
     TooltipProcessBgm,
+    TooltipProcessBgmWasapi,
     TooltipAutoHook,
     TooltipAutoHookDelay,
     TooltipHotkey

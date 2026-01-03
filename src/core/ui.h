@@ -10,11 +10,6 @@ int runController(HINSTANCE hInstance, int nCmdShow);
 
 struct ControllerOptions {
     bool enableLog = false;
-    bool skipDirectSound = false;
-    bool skipXAudio2 = false;
-    bool skipFmod = false;
-    bool skipWwise = false;
-    bool safeMode = false;
     bool processAllAudio = false;
     float speed = 1.5f;
     float bgmSeconds = 60.0f;

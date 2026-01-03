@@ -112,29 +112,10 @@ std::vector<std::uint8_t> DspPipeline::process(const std::uint8_t *data, std::si
     }
 
     if (output.empty()) {
-        auto naiveResample = [&](float ratio) {
-            const double inv = 1.0 / ratio;
-            const std::size_t outputSamples = static_cast<std::size_t>(sampleCount * inv);
-            std::vector<std::uint8_t> outBytes(outputSamples * sizeof(std::int16_t));
-            const auto *input = reinterpret_cast<const std::int16_t *>(data);
-            auto *out = reinterpret_cast<std::int16_t *>(outBytes.data());
-            for (std::size_t i = 0; i < outputSamples; ++i) {
-                const double srcIndex = i * ratio;
-                const std::size_t idx = static_cast<std::size_t>(srcIndex);
-                const std::size_t next = std::min<std::size_t>(idx + 1, sampleCount - 1);
-                const double frac = srcIndex - idx;
-                const std::int16_t a = input[idx];
-                const std::int16_t b = input[next];
-                out[i] = static_cast<std::int16_t>(a + (b - a) * frac);
-            }
-            return outBytes;
-        };
-        if (mode == DspMode::Tempo && std::abs(speedRatio - 1.0f) >= 0.01f) {
-            return naiveResample(speedRatio);
-        }
         if (mode == DspMode::Pitch) {
             return std::vector<std::uint8_t>(data, data + bytes);
         }
+        return {};
     }
 
     return output;
@@ -232,27 +213,10 @@ std::vector<float> DspPipeline::process(const float *data, std::size_t samples, 
     }
 
     if (output.empty()) {
-        auto naiveResample = [&](float ratio) {
-            const double inv = 1.0 / ratio;
-            const std::size_t outputSamples = static_cast<std::size_t>(samples * inv);
-            std::vector<float> out(outputSamples);
-            for (std::size_t i = 0; i < outputSamples; ++i) {
-                const double srcIndex = i * ratio;
-                const std::size_t idx = static_cast<std::size_t>(srcIndex);
-                const std::size_t next = std::min<std::size_t>(idx + 1, samples - 1);
-                const double frac = srcIndex - idx;
-                const float a = data[idx];
-                const float b = data[next];
-                out[i] = static_cast<float>(a + (b - a) * frac);
-            }
-            return out;
-        };
-        if (mode == DspMode::Tempo && std::abs(speedRatio - 1.0f) >= 0.01f) {
-            return naiveResample(speedRatio);
-        }
         if (mode == DspMode::Pitch) {
             return std::vector<float>(data, data + samples);
         }
+        return {};
     }
     return output;
 #else

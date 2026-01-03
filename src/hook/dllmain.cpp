@@ -1,7 +1,6 @@
-#include "XAudio2Hook.h"
 #include "DirectSoundHook.h"
-#include "FMODHook.h"
-#include "WwiseHook.h"
+#include "WasapiHook.h"
+#include "SharedSettingsManager.h"
 #include "HookUtils.h"
 #include "../common/Logging.h"
 #include "../common/SharedSettings.h"
@@ -43,6 +42,12 @@ namespace {
     PVOID g_dllNotifyCookie = nullptr;
     PVOID g_vectored = nullptr;
 
+    FARPROC WINAPI GetProcAddressHook(HMODULE module, LPCSTR procName);
+    HMODULE WINAPI LoadLibraryAHook(LPCSTR lpLibFileName);
+    HMODULE WINAPI LoadLibraryWHook(LPCWSTR lpLibFileName);
+    HMODULE WINAPI LoadLibraryExAHook(LPCSTR lpLibFileName, HANDLE file, DWORD flags);
+    HMODULE WINAPI LoadLibraryExWHook(LPCWSTR lpLibFileName, HANDLE file, DWORD flags);
+
     LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS *info) {
         static std::atomic<int> logged{0};
         if (!info || !info->ExceptionRecord) {
@@ -63,17 +68,46 @@ namespace {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    void PatchUnityModuleImports(HMODULE module, const char *nameAnsi) {
+        if (!module || !nameAnsi) return;
+        krkrspeed::WasapiHook::instance().tryPatchModule(module, nameAnsi);
+
+        bool patched = false;
+        patched |= krkrspeed::PatchImportInModule(module, "kernel32.dll", "GetProcAddress",
+                                                  reinterpret_cast<void *>(&GetProcAddressHook),
+                                                  reinterpret_cast<void **>(&g_origGetProcAddress));
+        patched |= krkrspeed::PatchImportInModule(module, "kernel32.dll", "LoadLibraryA",
+                                                  reinterpret_cast<void *>(&LoadLibraryAHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryA));
+        patched |= krkrspeed::PatchImportInModule(module, "kernel32.dll", "LoadLibraryW",
+                                                  reinterpret_cast<void *>(&LoadLibraryWHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryW));
+        patched |= krkrspeed::PatchImportInModule(module, "kernel32.dll", "LoadLibraryExA",
+                                                  reinterpret_cast<void *>(&LoadLibraryExAHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryExA));
+        patched |= krkrspeed::PatchImportInModule(module, "kernel32.dll", "LoadLibraryExW",
+                                                  reinterpret_cast<void *>(&LoadLibraryExWHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryExW));
+        patched |= krkrspeed::PatchImportInModule(module, "kernelbase.dll", "LoadLibraryW",
+                                                  reinterpret_cast<void *>(&LoadLibraryWHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryW));
+        patched |= krkrspeed::PatchImportInModule(module, "kernelbase.dll", "LoadLibraryA",
+                                                  reinterpret_cast<void *>(&LoadLibraryAHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryA));
+        patched |= krkrspeed::PatchImportInModule(module, "kernelbase.dll", "LoadLibraryExW",
+                                                  reinterpret_cast<void *>(&LoadLibraryExWHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryExW));
+        patched |= krkrspeed::PatchImportInModule(module, "kernelbase.dll", "LoadLibraryExA",
+                                                  reinterpret_cast<void *>(&LoadLibraryExAHook),
+                                                  reinterpret_cast<void **>(&g_origLoadLibraryExA));
+        if (patched) {
+            KRKR_LOG_INFO(std::string("Patched kernel32/kernelbase imports in ") + nameAnsi);
+        }
+    }
+
     void OnLibraryLoaded(HMODULE module, const char *nameAnsi) {
         if (!module || !nameAnsi) return;
-        auto &xa = krkrspeed::XAudio2Hook::instance();
         auto &ds = krkrspeed::DirectSoundHook::instance();
-        if (!xa.hasCreateHook()) {
-            FARPROC fn = GetProcAddress(module, "XAudio2Create");
-            if (fn) {
-                xa.setOriginalCreate(reinterpret_cast<void *>(fn));
-                KRKR_LOG_INFO(std::string("Captured XAudio2Create from newly loaded module: ") + nameAnsi);
-            }
-        }
         if (!ds.hasCreateHook()) {
             FARPROC fn = GetProcAddress(module, "DirectSoundCreate8");
             if (fn) {
@@ -87,13 +121,8 @@ namespace {
             }
         }
 
-        // FMOD
-        if (strstr(nameAnsi, "fmod") || strstr(nameAnsi, "FMOD")) {
-            krkrspeed::FMODHook::instance().initialize();
-        }
-        // Wwise
-        if (strstr(nameAnsi, "AkSoundEngine") || strstr(nameAnsi, "aksoundengine")) {
-             krkrspeed::WwiseHook::instance().initialize();
+        if (strstr(nameAnsi, "UnityPlayer") || strstr(nameAnsi, "GameAssembly")) {
+            PatchUnityModuleImports(module, nameAnsi);
         }
     }
 
@@ -103,13 +132,9 @@ namespace {
             return fn;
         }
 
-        if (_stricmp(procName, "XAudio2Create") == 0) {
-            auto &xa = krkrspeed::XAudio2Hook::instance();
-            xa.setOriginalCreate(reinterpret_cast<void *>(fn));
-            return reinterpret_cast<FARPROC>(&krkrspeed::XAudio2Hook::XAudio2CreateHook);
-        }
         if (_stricmp(procName, "CoCreateInstance") == 0) {
-            return reinterpret_cast<FARPROC>(&krkrspeed::XAudio2Hook::CoCreateInstanceHook);
+            krkrspeed::WasapiHook::instance().setOriginalCoCreate(reinterpret_cast<void *>(fn));
+            return reinterpret_cast<FARPROC>(&krkrspeed::WasapiHook::CoCreateInstanceHook);
         }
         if (_stricmp(procName, "DirectSoundCreate8") == 0) {
             auto &ds = krkrspeed::DirectSoundHook::instance();
@@ -120,18 +145,6 @@ namespace {
             auto &ds = krkrspeed::DirectSoundHook::instance();
             ds.setOriginalCreate(reinterpret_cast<void *>(fn));
             return reinterpret_cast<FARPROC>(&krkrspeed::DirectSoundHook::DirectSoundCreateHook);
-        }
-        if (_stricmp(procName, "FMOD_System_PlaySound") == 0) {
-            auto &fh = krkrspeed::FMODHook::instance();
-            fh.setOriginalSystemPlaySound(reinterpret_cast<void*>(fn));
-            // Ensure FMOD functions are loaded so we can create DSPs later
-            fh.initialize();
-            return reinterpret_cast<FARPROC>(krkrspeed::FMODHook::getSystemPlaySoundHook());
-        }
-        if (_stricmp(procName, "FMOD_Channel_SetCallback") == 0) {
-            auto &fh = krkrspeed::FMODHook::instance();
-            fh.setOriginalChannelSetCallback(reinterpret_cast<void*>(fn));
-            return reinterpret_cast<FARPROC>(krkrspeed::FMODHook::getChannelSetCallbackHook());
         }
         return fn;
     }
@@ -215,15 +228,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 if (shared.enableLog) {
                     krkrspeed::SetLoggingEnabled(true);
                 }
-                if (shared.safeMode) {
-                    KRKR_LOG_INFO("Safe mode set by controller; skipping all hooks and patches");
-                    return;
+                krkrspeed::SharedSettingsManager::instance().attachSharedSettings();
+                if (haveShared) {
+                    krkrspeed::SharedSettingsManager::instance().applySharedSettings(shared);
                 }
-
-                const bool skipXa = haveShared ? (shared.skipXAudio2 != 0) : false;
-                const bool skipDs = haveShared ? (shared.skipDirectSound != 0) : false;
-                const bool skipFmod = haveShared ? (shared.skipFmod != 0) : false;
-                const bool skipWwise = haveShared ? (shared.skipWwise != 0) : false;
                 stage = "patch GetProcAddress";
                 if (krkrspeed::PatchImport("kernel32.dll", "GetProcAddress",
                                            reinterpret_cast<void *>(&GetProcAddressHook),
@@ -236,7 +244,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 if (krkrspeed::PatchImport("kernel32.dll", "LoadLibraryA",
                                            reinterpret_cast<void *>(&LoadLibraryAHook),
                                            reinterpret_cast<void **>(&g_origLoadLibraryA))) {
-                    KRKR_LOG_INFO("Patched LoadLibraryA to capture late XAudio2/DirectSound loads");
+                    KRKR_LOG_INFO("Patched LoadLibraryA to capture late audio module loads");
                 } else {
                     KRKR_LOG_WARN("Failed to patch LoadLibraryA; late-load modules may be missed");
                 }
@@ -244,7 +252,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                 if (krkrspeed::PatchImport("kernel32.dll", "LoadLibraryW",
                                            reinterpret_cast<void *>(&LoadLibraryWHook),
                                            reinterpret_cast<void **>(&g_origLoadLibraryW))) {
-                    KRKR_LOG_INFO("Patched LoadLibraryW to capture late XAudio2/DirectSound loads");
+                    KRKR_LOG_INFO("Patched LoadLibraryW to capture late audio module loads");
                 } else {
                     KRKR_LOG_WARN("Failed to patch LoadLibraryW; late-load modules may be missed");
                 }
@@ -295,26 +303,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                     KRKR_LOG_ERROR("Init: module dump threw an exception; continuing");
                 }
 
-                stage = "xaudio2 init";
-                if (haveShared) {
-                    krkrspeed::XAudio2Hook::instance().configureLengthGate(shared.lengthGateEnabled != 0,
-                                                                          shared.lengthGateSeconds);
-                }
-                krkrspeed::XAudio2Hook::instance().setSkip(skipXa);
-                if (!skipXa) {
-                    KRKR_LOG_INFO("Init: starting XAudio2Hook::initialize");
-                    try {
-                        krkrspeed::XAudio2Hook::instance().initialize();
-                    } catch (...) {
-                        KRKR_LOG_ERROR("Init: XAudio2Hook::initialize threw an exception");
-                    }
-                } else {
-                    KRKR_LOG_INFO("KRKR_SKIP_XAUDIO2 set; skipping XAudio2 hooks");
+                stage = "wasapi init";
+                KRKR_LOG_INFO("Init: starting WasapiHook::initialize");
+                try {
+                    krkrspeed::WasapiHook::instance().initialize();
+                } catch (...) {
+                    KRKR_LOG_ERROR("Init: WasapiHook::initialize threw an exception");
                 }
 
                 stage = "directsound init";
                 krkrspeed::DirectSoundHook::Config dsCfg;
-                dsCfg.skip = skipDs;
                 dsCfg.disableBgm = haveShared ? (shared.disableBgm != 0) : false;
                 dsCfg.processAllAudio = haveShared ? (shared.processAllAudio != 0) : false;
                 dsCfg.bgmGateSeconds = haveShared ? shared.bgmSecondsGate : 60.0f;
@@ -326,30 +324,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
                     krkrspeed::DirectSoundHook::instance().initialize();
                 } catch (...) {
                     KRKR_LOG_ERROR("Init: DirectSoundHook::initialize threw an exception");
-                }
-
-                stage = "fmod init";
-                KRKR_LOG_INFO("Init: starting FMODHook::initialize");
-                try {
-                    if (!skipFmod) {
-                        krkrspeed::FMODHook::instance().initialize();
-                    } else {
-                        KRKR_LOG_INFO("KRKR_SKIP_FMOD set; skipping FMOD hooks");
-                    }
-                } catch (...) {
-                    KRKR_LOG_ERROR("Init: FMODHook::initialize threw an exception");
-                }
-
-                stage = "wwise init";
-                KRKR_LOG_INFO("Init: starting WwiseHook::initialize");
-                try {
-                    if (!skipWwise) {
-                        krkrspeed::WwiseHook::instance().initialize();
-                    } else {
-                        KRKR_LOG_INFO("KRKR_SKIP_WWISE set; skipping Wwise hooks");
-                    }
-                } catch (...) {
-                    KRKR_LOG_ERROR("Init: WwiseHook::initialize threw an exception");
                 }
 
                 stage = "ldr notify";

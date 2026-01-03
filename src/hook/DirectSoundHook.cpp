@@ -1,6 +1,7 @@
 #include "DirectSoundHook.h"
 #include "HookUtils.h"
-#include "XAudio2Hook.h"
+#include "SharedSettingsManager.h"
+#include "SharedStatusManager.h"
 #include "../common/Logging.h"
 #include "../common/AudioStreamProcessor.h"
 
@@ -64,14 +65,10 @@ void DirectSoundHook::applySharedSettingsFallback() {
 }
 
 void DirectSoundHook::initialize() {
-    // Default ON; allow opt-out via config.
-    if (m_config.skip) {
-        KRKR_LOG_INFO("DirectSound hooks disabled by config");
-        return;
-    }
     m_bgmSecondsGate = m_config.bgmGateSeconds;
     m_disableBgm = m_config.disableBgm;
     m_forceApply = m_config.processAllAudio;
+    m_active.store(false);
     m_fragmented.store(true);
     m_loggedFragmentedClear.store(false);
     m_loggedMonoStereo.store(false);
@@ -302,6 +299,7 @@ HRESULT WINAPI DirectSoundHook::UnlockHook(IDirectSoundBuffer *self, LPVOID pAud
         if (!hook.m_disableAfterFault.exchange(true)) {
             KRKR_LOG_ERROR("DirectSound UnlockHook threw; disabling DS processing for safety");
         }
+        hook.m_active.store(false);
         return hook.m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
     }
 }
@@ -376,7 +374,9 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
         KRKR_LOG_INFO("DirectSound UnlockHook engaged on buffer=" +
                       std::to_string(reinterpret_cast<std::uintptr_t>(self)));
     }
-    XAudio2Hook::instance().pollSharedSettings();
+    m_active.store(true);
+    SharedStatusManager::instance().setActiveBackend(AudioBackend::DirectSound);
+    SharedSettingsManager::instance().pollSharedSettings();
     static std::chrono::steady_clock::time_point lastSharedPoll{};
     const auto pollNow = std::chrono::steady_clock::now();
     if (lastSharedPoll.time_since_epoch().count() == 0 ||
@@ -430,9 +430,9 @@ HRESULT DirectSoundHook::handleUnlock(IDirectSoundBuffer *self, LPVOID pAudioPtr
                 }
                 return m_origUnlock(self, pAudioPtr1, dwAudioBytes1, pAudioPtr2, dwAudioBytes2);
             }
-            const float userSpeed = XAudio2Hook::instance().getUserSpeed();
-            const bool gate = XAudio2Hook::instance().isLengthGateEnabled();
-            const float gateSeconds = XAudio2Hook::instance().lengthGateSeconds();
+            const float userSpeed = SharedSettingsManager::instance().getUserSpeed();
+            const bool gate = SharedSettingsManager::instance().isLengthGateEnabled();
+            const float gateSeconds = SharedSettingsManager::instance().lengthGateSeconds();
             auto &info = it->second;
             info.unlockCount++;
             if (info.channels == 1) {

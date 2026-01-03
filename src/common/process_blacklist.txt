@@ -1,0 +1,17 @@
+# One executable name per line (case-insensitive).
+# Lines starting with # or ; are ignored.
+
+# Controller
+KrkrSpeedController.exe
+
+# Windows
+explorer.exe
+Taskmgr.exe
+TextInputHost.exe
+notepad.exe
+
+# Common Apps
+NVIDIA Overlay.exe
+Chrome.exe
+steamwebhelper.exe
+Magpie.exe
